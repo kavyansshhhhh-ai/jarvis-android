@@ -1,0 +1,70 @@
+name: Android APK
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build & Test Debug APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK_ROOT" ]; then
+            echo "Error: Android SDK not found at $SDK_ROOT" >&2
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -maxdepth 3 -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "Error: sdkmanager not found under $SDK_ROOT/cmdline-tools" >&2
+            exit 1
+          fi
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+
+          { yes || true; } | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null
+
+          PACKAGES=()
+          [ -d "$SDK_ROOT/platform-tools" ] || PACKAGES+=("platform-tools")
+          [ -d "$SDK_ROOT/platforms/android-35" ] || PACKAGES+=("platforms;android-35")
+          [ -d "$SDK_ROOT/build-tools/34.0.0" ] || PACKAGES+=("build-tools;34.0.0")
+          [ -d "$SDK_ROOT/ndk/27.0.12077973" ] || PACKAGES+=("ndk;27.0.12077973")
+          [ -d "$SDK_ROOT/cmake/3.22.1" ] || PACKAGES+=("cmake;3.22.1")
+
+          if [ ${#PACKAGES[@]} -gt 0 ]; then
+            echo "Installing missing Android SDK packages: ${PACKAGES[*]}"
+            "$SDKMANAGER" --sdk_root="$SDK_ROOT" "${PACKAGES[@]}"
+          else
+            echo "All required Android SDK packages are already installed."
+          fi
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run unit tests and build debug APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon
+
+      - name: Upload debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
