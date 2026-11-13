@@ -13,9 +13,26 @@ import java.io.IOException
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
-/** Date and time, weather, and opening a web search. */
+/** Enforces that external Chrome/browser search ONLY launches when the user explicitly asked for it. */
+object BrowserLaunchGuard {
+    private val EXPLICIT_BROWSER = Regex(
+        """\b(open|launch|in|on|via|use|search\s+(?:in|on))\s+(chrome|browser|google\s+chrome|web\s+browser)\b|\b(chrome|browser)\s+(me|mein|par|pe|kholo|open)\b|\bopen\s+web\s+page\b""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    fun isExplicitBrowserRequest(userUtterance: String): Boolean {
+        val clean = userUtterance.trim()
+        if (clean.isEmpty()) return false
+        return EXPLICIT_BROWSER.containsMatchIn(clean)
+    }
+}
+
+/**
+ * Date/time, weather, internal factual search (without opening Chrome), and explicit-only
+ * browser web search when requested by the user.
+ */
 object InfoTools {
-    fun all(): List<PhoneTool> = listOf(DateTime, GetWeather, OpenWebSearch)
+    fun all(): List<PhoneTool> = listOf(DateTime, GetWeather, WebSearchInternal, OpenWebSearch)
 
     private object DateTime : PhoneTool {
         override val name = "get_current_datetime"
@@ -50,13 +67,39 @@ object InfoTools {
         }
     }
 
+    private object WebSearchInternal : PhoneTool {
+        override val name = "web_search_internal"
+
+        override fun declaration() = Schema.function(
+            name,
+            "Looks up factual information internally via Wikipedia / Instant Answer WITHOUT opening Chrome or leaving JARVIS. " +
+                "Prefer answering general knowledge questions directly, or use this for factual lookups inside JARVIS.",
+            Schema.string("query", "Topic or question to look up inside JARVIS.", required = true),
+        )
+
+        override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
+            val query = args.text("query")
+            if (query.isEmpty()) return Results.failed("no_query", "Ask what to look up.")
+            val summary = withContext(Dispatchers.IO) {
+                InternalSearch.lookup(host.http, query)
+            }
+            return if (summary != null) {
+                Results.done(summary)
+            } else {
+                Results.failed(
+                    "no_instant_answer",
+                    "No concise summary was returned internally for \"$query\". Answer concisely from your knowledge or ask if they want it opened in Chrome.",
+                )
+            }
+        }
+    }
+
     private object OpenWebSearch : PhoneTool {
         override val name = "open_web_search"
 
         override fun declaration() = Schema.function(
             name,
-            "Opens Google search results in the browser for the user to read. Use for news, prices, " +
-                "scores and anything recent.",
+            "ONLY call when the user explicitly asked to open Chrome or a browser. NEVER use for normal questions—answer those directly inside JARVIS or use web_search_internal.",
             Schema.string("query", "The search words.", required = true),
         )
 
@@ -64,7 +107,86 @@ object InfoTools {
             val query = args.text("query")
             if (query.isEmpty()) return Results.failed("no_query", "Ask what to search for.")
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=${Uri.encode(query)}"))
-            return host.openApp(intent, "browser", "The browser will open with results for \"$query\" after you speak.")
+            return host.openApp(intent, "Chrome", "Chrome will open with results for \"$query\" after you speak.")
+        }
+    }
+}
+
+/** Lightweight internal web knowledge fetcher (DuckDuckGo Instant Answer + Wikipedia summary). */
+object InternalSearch {
+    fun lookup(http: OkHttpClient, query: String): String? {
+        val ddg = runCatching { fetchDuckDuckGo(http, query) }.getOrNull()
+        if (!ddg.isNullOrBlank()) return ddg
+        return runCatching { fetchWikipedia(http, query) }.getOrNull()
+    }
+
+    fun parseDuckDuckGo(json: JSONObject): String? {
+        val abstractText = json.optString("AbstractText").trim()
+        if (abstractText.isNotEmpty()) {
+            val heading = json.optString("Heading").trim()
+            return if (heading.isNotEmpty()) "$heading: $abstractText" else abstractText
+        }
+        val answer = json.optString("Answer").trim()
+        if (answer.isNotEmpty()) return answer
+        val definition = json.optString("Definition").trim()
+        if (definition.isNotEmpty()) return definition
+        val topics = json.optJSONArray("RelatedTopics") ?: return null
+        for (i in 0 until minOf(topics.length(), 4)) {
+            val firstText = topics.optJSONObject(i)?.optString("Text")?.trim().orEmpty()
+            if (firstText.isNotEmpty()) return firstText
+        }
+        return null
+    }
+
+    fun parseWikipediaSummary(json: JSONObject): String? {
+        val extract = json.optString("extract").trim()
+        if (extract.isEmpty()) return null
+        val title = json.optString("title").trim()
+        val short = extract.take(420).trim()
+        return if (title.isNotEmpty() && !short.startsWith(title, ignoreCase = true)) {
+            "$title: $short"
+        } else {
+            short
+        }
+    }
+
+    private fun fetchDuckDuckGo(http: OkHttpClient, query: String): String? {
+        val url = "https://api.duckduckgo.com/".toHttpUrl().newBuilder()
+            .addQueryParameter("q", query)
+            .addQueryParameter("format", "json")
+            .addQueryParameter("no_html", "1")
+            .addQueryParameter("skip_disambig", "1")
+            .build()
+        val req = Request.Builder().url(url).header("User-Agent", "JARVIS-Android/1.0").build()
+        http.newCall(req).execute().use { res ->
+            if (!res.isSuccessful) return null
+            val body = res.body?.string().orEmpty()
+            if (body.isBlank()) return null
+            return parseDuckDuckGo(JSONObject(body))
+        }
+    }
+
+    private fun fetchWikipedia(http: OkHttpClient, query: String): String? {
+        val searchUrl = "https://en.wikipedia.org/w/api.php".toHttpUrl().newBuilder()
+            .addQueryParameter("action", "query")
+            .addQueryParameter("list", "search")
+            .addQueryParameter("srsearch", query)
+            .addQueryParameter("srlimit", "1")
+            .addQueryParameter("format", "json")
+            .build()
+        val searchReq = Request.Builder().url(searchUrl).header("User-Agent", "JARVIS-Android/1.0").build()
+        val title = http.newCall(searchReq).execute().use { res ->
+            if (!res.isSuccessful) return null
+            val obj = JSONObject(res.body?.string().orEmpty())
+            obj.optJSONObject("query")?.optJSONArray("search")?.optJSONObject(0)?.optString("title")?.trim().orEmpty()
+        }
+        if (title.isEmpty()) return null
+        val slug = title.replace(' ', '_')
+        val summaryUrl = "https://en.wikipedia.org/api/rest_v1/page/summary/${Uri.encode(slug)}"
+        val summaryReq = Request.Builder().url(summaryUrl).header("User-Agent", "JARVIS-Android/1.0").build()
+        http.newCall(summaryReq).execute().use { res ->
+            if (!res.isSuccessful) return null
+            return parseWikipediaSummary(JSONObject(res.body?.string().orEmpty()))
         }
     }
 }

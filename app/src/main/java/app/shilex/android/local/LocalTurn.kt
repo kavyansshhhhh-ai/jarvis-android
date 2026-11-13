@@ -16,6 +16,7 @@ import android.speech.tts.UtteranceProgressListener
 import app.shilex.android.Diag
 import app.shilex.android.assistant.VoiceService
 import app.shilex.android.assistant.VoiceSession
+import app.shilex.android.audio.AudioPlaybackState
 import app.shilex.android.audio.MusicPause
 import app.shilex.android.data.Settings
 import app.shilex.android.learn.Habits
@@ -217,10 +218,18 @@ class LocalTurn private constructor(private val context: Context) {
                 AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build(),
             )
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) = Unit
-                override fun onDone(utteranceId: String?) { main.post(::finish) }
+                override fun onStart(utteranceId: String?) {
+                    AudioPlaybackState.onLocalTtsStarted()
+                }
+                override fun onDone(utteranceId: String?) {
+                    AudioPlaybackState.onLocalTtsEnded()
+                    main.post(::finish)
+                }
                 @Deprecated("Deprecated in Java")
-                override fun onError(utteranceId: String?) { main.post(::finish) }
+                override fun onError(utteranceId: String?) {
+                    AudioPlaybackState.onLocalTtsEnded()
+                    main.post(::finish)
+                }
             })
         }
     }
@@ -233,6 +242,7 @@ class LocalTurn private constructor(private val context: Context) {
             return
         }
         _phase.value = LocalPhase.Speaking
+        AudioPlaybackState.onLocalTtsStarted()
         voice.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "reply")
     }
 
@@ -257,6 +267,9 @@ class LocalTurn private constructor(private val context: Context) {
             is LocalCommand.Timer -> "Timer"
             is LocalCommand.Alarm -> "Alarm"
             is LocalCommand.OpenApp -> "Open ${command.name}"
+            is LocalCommand.SystemPanel -> command.target.label
+            LocalCommand.ListApps -> "Installed apps"
+            is LocalCommand.SearchApps -> "App check: ${command.query}"
             LocalCommand.Stop -> "Stop"
         }
 

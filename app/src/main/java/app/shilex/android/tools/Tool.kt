@@ -44,6 +44,9 @@ interface ToolHost {
 
     /** Ensures the user explicitly authorized limited non-sensitive assistance inside a banking/UPI app this turn. */
     suspend fun authorizeFinance(packageName: String, appLabel: String): Boolean = true
+
+    /** Opens Android's system Photo Picker when screen capture is blocked (FLAG_SECURE or user preference). */
+    fun requestPhotoPick(question: String = "") = Unit
 }
 
 /** Tool results the model reads. `status` is always one of these words. */

@@ -13,47 +13,93 @@ data class InstalledApp(val label: String, val packageName: String)
 /** App-name matching, pure so it is unit-tested: exact, starts with, then contains. */
 object AppMatch {
     fun find(query: String, apps: List<InstalledApp>): List<InstalledApp> {
-        val q = query.lowercase().trim().removeSuffix(" app")
-        if (q.isEmpty()) return emptyList()
-        val tiers = listOf<(String) -> Boolean>({ it == q }, { it.startsWith(q) }, { q in it })
-        for (matches in tiers) {
-            val found = apps.filter { matches(it.label.lowercase().trim()) }.distinctBy { it.packageName }
-            if (found.isNotEmpty()) return found
-        }
-        return emptyList()
+        val infoApps = apps.map { InstalledAppInfo(label = it.label, packageName = it.packageName) }
+        return AppCatalog.find(query, infoApps, includeNonLaunchable = true)
+            .map { InstalledApp(it.label, it.packageName) }
     }
 }
 
-/** Opening any installed app by name. */
+/** Opening, listing (A-Z), and searching installed apps by name. */
 object AppTools {
-    fun all(): List<PhoneTool> = listOf(OpenApp)
+    fun all(): List<PhoneTool> = listOf(OpenApp, ListInstalledApps)
 
     private object OpenApp : PhoneTool {
         override val name = "open_app"
 
         override fun declaration() = Schema.function(
             name,
-            "Opens an installed app by name. With phone control on it opens at once and returns " +
+            "Opens an installed app by name (checks all launchable installed apps accurately). With phone control on it opens at once and returns " +
                 "the app's screen, so you can carry on with ui_click / ui_type.",
             Schema.string("name", "App name as the user said it, e.g. WhatsApp, Instagram, Camera.", required = true),
         )
 
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
+            val query = args.text("name")
             val pm = host.context.packageManager
-            val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-            val apps = pm.queryIntentActivities(launcher, 0).map {
-                InstalledApp(it.loadLabel(pm).toString(), it.activityInfo.packageName)
-            }
-            val matches = AppMatch.find(args.text("name"), apps)
+            val catalog = InstalledAppsRegistry.apps(host.context, forceRefresh = true)
+            val launchMatches = AppCatalog.find(query, catalog, includeNonLaunchable = false)
             val app = when {
-                matches.isEmpty() -> return Results.failed("not_found", "No app called ${args.text("name")} is installed.")
-                matches.size > 1 -> return Results.ask("Several apps match. Ask which.", matches.take(6).map { it.label })
-                else -> matches.single()
+                launchMatches.isEmpty() -> {
+                    val nonLaunchable = AppCatalog.find(query, catalog, includeNonLaunchable = true)
+                    return if (nonLaunchable.isNotEmpty()) {
+                        val first = nonLaunchable.first()
+                        Results.failed(
+                            "no_launch",
+                            "${first.label} (${first.packageName}) is installed on the phone as a background/system component and has no launcher screen to open.",
+                        )
+                    } else {
+                        Results.failed("not_found", "No app called $query is installed on this phone.")
+                    }
+                }
+                launchMatches.size > 1 -> return Results.ask(
+                    "Several installed apps match \"$query\". Ask which one.",
+                    launchMatches.take(6).map { "${it.label} (${it.packageName})" },
+                )
+                else -> launchMatches.single()
             }
             val intent = pm.getLaunchIntentForPackage(app.packageName)
                 ?: return Results.failed("no_launch", "${app.label} can't be opened from outside.")
-            return openAndRead(host, intent, app, "Opened ${app.label}.")
+            val basic = InstalledApp(app.label, app.packageName)
+            return openAndRead(host, intent, basic, "Opened ${app.label}.")
                 ?: host.openApp(intent, app.label, "${app.label} will open after you speak.")
+        }
+    }
+
+    private object ListInstalledApps : PhoneTool {
+        override val name = "list_installed_apps"
+
+        override fun declaration() = Schema.function(
+            name,
+            "Lists installed apps sorted alphabetically (A-Z) or searches installed apps by keyword/Hindi/Hinglish query.",
+            Schema.string("mode", "list_az to list A-Z, search to search by name, info to inspect launchability.", choices = listOf("list_az", "search", "info")),
+            Schema.string("query", "Search keyword (required when mode is search or info)."),
+            Schema.string("include_system", "true or false (default false for shorter user-app lists).", choices = listOf("false", "true")),
+        )
+
+        override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
+            val mode = args.text("mode").ifEmpty { "list_az" }
+            val query = args.text("query")
+            val includeSystem = args.text("include_system") == "true"
+            val catalog = InstalledAppsRegistry.apps(host.context, forceRefresh = true)
+            return when (mode) {
+                "search", "info" -> {
+                    if (query.isEmpty()) {
+                        Results.done(AppCatalog.summarizeAlphabetical(catalog, includeSystem = includeSystem))
+                    } else {
+                        val hits = AppCatalog.search(query, catalog, includeNonLaunchable = mode == "info")
+                        if (hits.isEmpty()) {
+                            Results.done("No installed app matching \"$query\" was found on this phone.")
+                        } else {
+                            val lines = hits.take(25).joinToString("\n") { app ->
+                                val tag = if (app.launchable) "openable" else "no-launcher/service"
+                                "- ${app.label} [$tag] (${app.packageName})"
+                            }
+                            Results.done("Matching installed apps (${hits.size}):\n$lines")
+                        }
+                    }
+                }
+                else -> Results.done(AppCatalog.summarizeAlphabetical(catalog, includeSystem = includeSystem))
+            }
         }
     }
 

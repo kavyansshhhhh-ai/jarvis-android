@@ -2,19 +2,24 @@ package app.shilex.android.assistant
 
 import android.app.Application
 import android.content.Context
+import android.net.Uri
 import android.os.SystemClock
 import app.shilex.android.Diag
+import app.shilex.android.audio.AudioPlaybackState
 import app.shilex.android.audio.MicRecorder
 import app.shilex.android.audio.TalkOver
 import app.shilex.android.audio.WaveStop
 import app.shilex.android.audio.MusicPause
 import app.shilex.android.control.ControlService
+import app.shilex.android.control.ScreenVision
 import app.shilex.android.audio.Speaker
 import app.shilex.android.audio.VOICE_LEVEL
 import app.shilex.android.audio.headphonesConnected
 import app.shilex.android.audio.pcmLevel
 import app.shilex.android.data.KeyCheckResult
 import app.shilex.android.data.KeyVault
+import app.shilex.android.data.PersonalProfileResolver
+import app.shilex.android.data.PersonalProfileStore
 import app.shilex.android.data.Settings
 import app.shilex.android.data.checkGeminiKey
 import app.shilex.android.live.LiveClient
@@ -45,6 +50,9 @@ data class UiState(
     val problem: String? = null,
     /** A permission a tool needs; the screen asks for it, then calls permissionAnswered. */
     val permissionNeeded: String? = null,
+    /** Incremented when Android blocks screenshot capture and Photo Picker is offered instead. */
+    val photoPickRequestId: Long = 0L,
+    val photoPickQuestion: String = "",
 )
 
 /**
@@ -71,6 +79,14 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
         onScreen = { screenVisible },
         note = { if (wanted) client.send(LiveProtocol.appNoteMessage(it)) },
         endSoon = ::endAfterReply,
+        onPhotoPick = { question ->
+            _state.update {
+                it.copy(
+                    photoPickRequestId = System.currentTimeMillis(),
+                    photoPickQuestion = question,
+                )
+            }
+        },
     )
     private val musicPause = MusicPause(app)
 
@@ -126,8 +142,9 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
 
     /** Call only after the mic is allowed. [firstText], heard or typed, goes to Gemini as the user's turn. */
     fun start(firstText: String? = null) {
+        if (firstText != null) tools.userSpoke(firstText)
         // Typed during a session (floating orb): send now, or once connected.
-        if (wanted && firstText != null) return tools.userSpoke(firstText).also {
+        if (wanted && firstText != null) return Unit.also {
             if (_state.value.phase == Phase.Connecting) pendingText = firstText else client.send(LiveProtocol.userTextMessage(firstText))
         }
         pendingText = firstText
@@ -184,8 +201,36 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
         client.close()
         speaker.flush()
         transcript.endTurn()
-        _state.update { it.copy(phase = Phase.Off) }
+        _state.update { it.copy(phase = Phase.Off, photoPickRequestId = 0L) }
         _level.value = 0f
+    }
+
+    /** Handles a user-selected photo from Android's Photo Picker fallback cleanly via Gemini Vision. */
+    fun onPhotoPicked(uri: Uri?) {
+        val question = _state.value.photoPickQuestion
+        _state.update { it.copy(photoPickRequestId = 0L, photoPickQuestion = "") }
+        if (uri == null) return
+        val key = vault.read(KeyVault.GEMINI_KEY)
+        if (key == null) {
+            _state.update { it.copy(problem = "Add your Gemini API key in Settings to describe photos.") }
+            return
+        }
+        scope.launch {
+            val outcome = ScreenVision(http, key).describeUri(app, uri, question)
+            when (outcome) {
+                is ScreenVision.Outcome.Described -> {
+                    if (wanted) {
+                        client.send(LiveProtocol.appNoteMessage("User picked this photo from gallery. Description: ${outcome.summary}"))
+                    } else {
+                        _state.update { it.copy(lines = transcript.add(fromUser = false, outcome.summary)) }
+                        transcript.endTurn()
+                    }
+                }
+                is ScreenVision.Outcome.Failed -> {
+                    _state.update { it.copy(problem = outcome.message) }
+                }
+            }
+        }
     }
 
     private fun loudness(level: Int) = (level / LOUD_LEVEL).coerceIn(0f, 1f)
@@ -240,12 +285,14 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
         _state.update { it.copy(phase = Phase.Connecting, problem = null) }
         connectAt = SystemClock.elapsedRealtime()
         Diag.i("socket: connecting (try ${retries + 1}, resume=${resumeHandle != null}, model=${settings.model})")
+        val profileSummary = PersonalProfileResolver.assistantContextSummary(PersonalProfileStore(app).load())
         val setup = LiveProtocol.Setup(
             model = settings.model,
             systemInstruction = Instructions.build(
                 settings.replyLanguage,
                 java.time.ZonedDateTime.now(),
                 if (settings.learning) Habits.get(app).summary(java.time.LocalTime.now().hour) else "",
+                profileSummary,
             ),
             voice = settings.voice,
             languages = settings.speechLanguages,

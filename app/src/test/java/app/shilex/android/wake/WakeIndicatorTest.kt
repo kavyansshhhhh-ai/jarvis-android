@@ -11,12 +11,56 @@ class WakeIndicatorTest {
     fun defaultSizeAndDurationMatchVisibleSubtleRequirements() {
         assertEquals(WakeDotSize.Standard, WakeDotSize.fromKey(null))
         assertEquals(WakeDotSize.Standard, WakeDotSize.fromKey("unknown"))
+        assertEquals(9, WakeDotSize.Small.coreDiameterDp)
         assertEquals(12, WakeDotSize.Standard.coreDiameterDp)
         assertEquals(22, WakeDotSize.Standard.glowDiameterDp)
+        assertEquals(50, WakeDotSize.Max.coreDiameterDp)
+        assertEquals(listOf(9, 12, 16, 22, 30, 40, 50), WakeDotSize.entries.map { it.coreDiameterDp })
         assertTrue(WakeIndicatorController.DISPLAY_DURATION_MS in 2_500L..3_000L)
         assertEquals(2_000L, WakeIndicatorController.clampDurationMs(500L))
         assertEquals(4_000L, WakeIndicatorController.clampDurationMs(10_000L))
         assertTrue(WakeIndicatorController.cleanupDelayMs(2_800L) > 2_800L)
+    }
+
+    @Test
+    fun suppressesDotWhenSessionActiveSpeakingOrDuplicateWindow() {
+        val controller = WakeIndicatorController()
+        assertFalse(
+            controller.onWakeDetected(
+                nowMs = 5_000L,
+                enabled = true,
+                keyguardLocked = false,
+                screenInteractive = true,
+                sessionActive = true,
+            ),
+        )
+        assertFalse(
+            controller.onWakeDetected(
+                nowMs = 6_000L,
+                enabled = true,
+                keyguardLocked = false,
+                screenInteractive = true,
+                assistantSpeaking = true,
+            ),
+        )
+        assertTrue(
+            controller.onWakeDetected(
+                nowMs = 10_000L,
+                enabled = true,
+                keyguardLocked = false,
+                screenInteractive = true,
+            ),
+        )
+        // Duplicate wake inside visible window is suppressed
+        assertFalse(
+            controller.onWakeDetected(
+                nowMs = 11_000L,
+                enabled = true,
+                keyguardLocked = false,
+                screenInteractive = true,
+            ),
+        )
+        assertEquals(1L, controller.state.value.triggerId)
     }
 
     @Test

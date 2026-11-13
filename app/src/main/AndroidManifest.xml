@@ -23,13 +23,22 @@
     <queries>
         <package android:name="com.google.android.apps.youtube.music" />
         <package android:name="com.spotify.music" />
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
         <intent>
             <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
         </intent>
-        <!-- open_app: find installed apps by name. -->
+        <!-- open_app & InstalledAppsRegistry: find installed launchable apps cleanly. -->
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.settings.panel.action.WIFI" />
         </intent>
         <!-- Local commands: the phone's speech recogniser and text-to-speech voice. -->
         <intent>

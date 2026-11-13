@@ -6,6 +6,7 @@ import app.shilex.android.Branding
 import app.shilex.android.control.ControlRules
 import app.shilex.android.control.ControlService
 import app.shilex.android.control.ScreenText
+import app.shilex.android.control.ScreenVision
 import app.shilex.android.control.SightAim
 import app.shilex.android.data.KeyVault
 import kotlinx.coroutines.delay
@@ -17,7 +18,7 @@ import org.json.JSONObject
  * Allow on JARVIS's own card; money, password and settings apps are never touched.
  */
 object ScreenTools {
-    fun all(): List<PhoneTool> = listOf(UiRead, UiClick, UiTapSeen, UiType, UiScroll, UiKey, HandToUser)
+    fun all(): List<PhoneTool> = listOf(UiRead, UiDescribeScreen, UiClick, UiTapSeen, UiType, UiScroll, UiKey, HandToUser)
 
     /** The control service, or the tool result explaining why it can't be used. */
     private fun control(): Pair<ControlService?, JSONObject?> {
@@ -32,8 +33,12 @@ object ScreenTools {
         return service to null
     }
 
-    /** Reads the screen after an action, so the model sees the result without another call. */
-    private suspend fun afterAction(service: ControlService, did: String): JSONObject {
+    /** Reads the screen after an action, verifying whether content actually changed. */
+    private suspend fun afterAction(
+        service: ControlService,
+        did: String,
+        beforeSig: String = "",
+    ): JSONObject {
         service.overlay.showActive()
         delay(SETTLE_MS)
         val fg = service.foregroundPackage()
@@ -58,8 +63,13 @@ object ScreenTools {
                     "Hand control back to the user with hand_to_user and explain why.",
             )
         }
+        val transitionNote = when {
+            beforeSig.isEmpty() -> ""
+            snap.signature != beforeSig -> "(Screen updated.) "
+            else -> "(Screen stayed the same.) "
+        }
         val summary = if (snap.financeApp) ControlRules.extractTransactionSummary(snap.elements) else ""
-        val prefix = if (summary.isNotEmpty()) "$did Summary on screen: $summary\n" else "$did "
+        val prefix = if (summary.isNotEmpty()) "$did $transitionNote Summary on screen: $summary\n" else "$did $transitionNote"
         return Results.done(prefix + "Screen now:\n" + ScreenText.describe(snap.appLabel, snap.elements, snap.more))
     }
 
@@ -136,6 +146,67 @@ object ScreenTools {
         }
     }
 
+    /**
+     * Understands a visible photo/image in WhatsApp or any allowed app after clear user permission.
+     * Respects FLAG_SECURE: when Android blocks screenshot capture, opens Android Photo Picker instead.
+     */
+    private object UiDescribeScreen : PhoneTool {
+        override val name = "ui_describe_screen"
+
+        override fun declaration() = Schema.function(
+            name,
+            "Looks at and describes a photo, image, or visual content currently visible on screen (e.g. a WhatsApp photo). " +
+                "Asks user permission first; never works on banking, UPI, password, or FLAG_SECURE protected screens (offers system Photo Picker instead).",
+            Schema.string("question", "What the user wants to know about the photo or screen."),
+        )
+
+        override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
+            val (service, problem) = control()
+            service ?: return problem!!
+            val pkg = service.foregroundPackage()
+            val fgLabel = appLabel(service, pkg)
+            val question = args.text("question")
+            if (pkg == host.context.packageName) {
+                return Results.failed("own_screen", "The user is looking at ${Branding.ASSISTANT_NAME}. Ask them to open the photo first, or pick a photo.")
+            }
+            if (ControlRules.blocked(pkg)) return blocked(fgLabel)
+            if (service.isSensitiveAuthActive()) return sensitiveAuth("authentication screen")
+            if (ControlRules.isFinanceApp(pkg)) {
+                return Results.failed(
+                    "screenshot_restricted_finance",
+                    "For security, ${Branding.ASSISTANT_NAME} never captures screenshots of $fgLabel.",
+                )
+            }
+            val key = KeyVault(host.context).read(KeyVault.GEMINI_KEY)
+                ?: return Results.failed("no_key", "Understanding photos needs the Gemini API key in Settings.")
+            if (!service.overlay.confirm("Inspect visible image in $fgLabel with Gemini Vision")) {
+                return Results.failed("cancelled", "The user didn't allow sharing the visible screen.")
+            }
+            return when (val shot = service.captureScreenshotResult()) {
+                is ControlService.ScreenshotCapture.Ok -> {
+                    when (val outcome = ScreenVision(host.http, key).describeBitmap(shot.bitmap, question)) {
+                        is ScreenVision.Outcome.Described -> Results.done(outcome.summary)
+                        is ScreenVision.Outcome.Failed -> Results.failed("vision_failed", outcome.message)
+                    }
+                }
+                ControlService.ScreenshotCapture.SecureBlocked -> {
+                    host.requestPhotoPick(question)
+                    Results.failed(
+                        "secure_screenshot_blocked",
+                        "$fgLabel blocks screenshots on this screen for privacy. ${Branding.ASSISTANT_NAME} opened Android's Photo Picker so the user can choose the saved photo safely if they want.",
+                    )
+                }
+                is ControlService.ScreenshotCapture.Unavailable -> {
+                    host.requestPhotoPick(question)
+                    Results.failed(
+                        "screenshot_unavailable",
+                        "${shot.reason} Opened Android's Photo Picker so the user can select a photo directly.",
+                    )
+                }
+            }
+        }
+    }
+
     private object UiClick : PhoneTool {
         override val name = "ui_click"
 
@@ -178,14 +249,16 @@ object ScreenTools {
                     return Results.failed("cancelled", "The user didn't allow it. Don't try again unless they ask.")
                 }
             }
-            if (!service.click(target)) {
+            val beforeSig = service.snapshot()?.signature.orEmpty()
+            val refreshedNode = service.node(args.optInt("number", 0).takeIf { it > 0 } ?: 0) ?: target
+            if (!service.click(refreshedNode)) {
                 return if (ControlRules.isFinanceApp(pkg)) {
                     accessibilityRestricted(name)
                 } else {
                     Results.failed("tap_failed", "The tap didn't go through.")
                 }
             }
-            return afterAction(service, "Tapped \"${ScreenText.shorten(label)}\".")
+            return afterAction(service, "Tapped \"${ScreenText.shorten(label)}\".", beforeSig = beforeSig)
         }
 
         /** (node, null) when found, (null, question) when several labels match, null when none. */
@@ -380,8 +453,9 @@ object ScreenTools {
             if (ControlRules.isFinanceApp(pkg) && !host.authorizeFinance(pkg, name)) {
                 return financeDeclined(name)
             }
+            val beforeSig = service.snapshot()?.signature.orEmpty()
             if (!service.scroll(down = args.text("direction") != "up")) return Results.failed("no_scroll", "Nothing to scroll here.")
-            return afterAction(service, "Scrolled.")
+            return afterAction(service, "Scrolled.", beforeSig = beforeSig)
         }
     }
 
@@ -390,14 +464,14 @@ object ScreenTools {
 
         override fun declaration() = Schema.function(
             name,
-            "Presses a phone key: back, home, recents, notifications (pull down the shade).",
+            "Presses a phone key: back, home, recents, notifications (pull down the shade), quick_settings (Quick Settings panel).",
             Schema.string("key", "Which key.", required = true, choices = KEYS.keys.toList()),
         )
 
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
             val (service, problem) = control()
             service ?: return problem!!
-            val action = KEYS[args.text("key")] ?: return Results.failed("bad_key", "Use back, home, recents or notifications.")
+            val action = KEYS[args.text("key")] ?: return Results.failed("bad_key", "Use back, home, recents, notifications or quick_settings.")
             if (!service.performGlobalAction(action)) return Results.failed("key_failed", "The phone didn't take that key.")
             return afterAction(service, "Pressed ${args.text("key")}.")
         }
@@ -407,6 +481,7 @@ object ScreenTools {
             "home" to AccessibilityService.GLOBAL_ACTION_HOME,
             "recents" to AccessibilityService.GLOBAL_ACTION_RECENTS,
             "notifications" to AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS,
+            "quick_settings" to AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS,
         )
     }
 

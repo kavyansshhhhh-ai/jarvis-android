@@ -2,8 +2,6 @@ package app.shilex.android.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -49,7 +47,7 @@ import app.shilex.android.assistant.AssistantViewModel
 import app.shilex.android.assistant.Phase
 import app.shilex.android.wake.WakeWordModel
 
-private enum class Step { Welcome, Key, LocalCloud, Mic, Wake, Control, Done }
+private enum class Step { Welcome, Key, LocalCloud, Permissions, Wake, Done }
 
 /**
  * Premium iOS Liquid Glass Onboarding Flow for JARVIS.
@@ -103,7 +101,14 @@ fun Onboarding(assistant: AssistantViewModel, hasKey: Boolean, onFinished: () ->
                         Spacer(Modifier.height(28.dp))
                         Primary("Continue", next)
                     }
-                    Step.Mic -> MicStep(next)
+                    Step.Permissions -> Page(
+                        "Permissions & Privacy",
+                        "Each permission explains why it is needed and which feature uses it. Optional permissions can be skipped; unrelated features keep working.",
+                    ) {
+                        PermissionCenterPanel(compact = true)
+                        Spacer(Modifier.height(20.dp))
+                        Primary("Continue", next)
+                    }
                     Step.Wake -> Page("Hands-free", "Say \"${WakeWordModel.PHRASE}\" (or \"${WakeWordModel.ALT_PHRASE}\") instead of touching the phone. Audio stays offline on this phone until you say it.") {
                         if (assistant.wakeWordAvailable && micAllowed()) {
                             var on by remember { mutableStateOf(assistant.wakeWordOn) }
@@ -119,21 +124,13 @@ fun Onboarding(assistant: AssistantViewModel, hasKey: Boolean, onFinished: () ->
                         } else {
                             GlassCard(modifier = Modifier.fillMaxWidth()) {
                                 Text(
-                                    if (assistant.wakeWordAvailable) "Allow microphone first in the previous step or later in Settings." else "Offline speech model unavailable.",
+                                    if (assistant.wakeWordAvailable) "Allow Microphone in the previous Permissions step or later in Settings." else "Offline speech model unavailable.",
                                     color = Muted,
                                 )
                             }
                         }
                         Spacer(Modifier.height(28.dp))
                         Primary("Continue", next)
-                    }
-                    Step.Control -> Page("Phone control (optional)", "Lets ${Branding.ASSISTANT_NAME} read the screen and tap for you. You can turn it on later in Settings.") {
-                        ControlCard(showWhenOn = true)
-                        Spacer(Modifier.height(24.dp))
-                        Primary("Continue", next)
-                        TextButton(onClick = next, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                            Text("Skip for now", color = Muted)
-                        }
                     }
                     Step.Done -> Page("You're set", "Say \"${WakeWordModel.PHRASE}\" or tap the mic. Settings has everything you configured.") {
                         Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) {
@@ -142,26 +139,6 @@ fun Onboarding(assistant: AssistantViewModel, hasKey: Boolean, onFinished: () ->
                         Primary("Start", onFinished)
                     }
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MicStep(next: () -> Unit) {
-    var allowed by remember { mutableStateOf(false) }
-    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed = it }
-    val already = micAllowed()
-    Page("Microphone", "Needed to hear you. Audio for the wake word and local commands stays on the phone; Gemini hears you only during active conversation.") {
-        if (already || allowed) {
-            GlassCard(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-                Text("Microphone permission granted.", color = ElectricCyan, style = MaterialTheme.typography.titleMedium)
-            }
-            Primary("Continue", next)
-        } else {
-            Primary("Allow microphone") { ask.launch(Manifest.permission.RECORD_AUDIO) }
-            TextButton(onClick = next, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                Text("Not now", color = Muted)
             }
         }
     }

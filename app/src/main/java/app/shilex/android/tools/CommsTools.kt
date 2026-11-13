@@ -3,6 +3,8 @@ package app.shilex.android.tools
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import app.shilex.android.control.ControlService
+import app.shilex.android.control.WhatsAppWorkflow
 import app.shilex.android.notify.Replies
 import android.telephony.PhoneNumberUtils
 import android.telephony.TelephonyManager
@@ -10,8 +12,8 @@ import org.json.JSONObject
 import java.util.Locale
 
 /**
- * Calls and messages. Each one opens the right app with everything filled in and the
- * user taps Call or Send there, so the model never completes these on its own.
+ * Calls and messages. Each one opens the right app with everything filled in and waits for the
+ * user's confirmation; WhatsApp can verify the draft and press Send only after explicit Allow.
  */
 object CommsTools {
     fun all(): List<PhoneTool> = listOf(CallContact, WhatsAppSend, SmsSend)
@@ -46,7 +48,7 @@ object CommsTools {
 
         override fun declaration() = Schema.function(
             name,
-            "Opens a WhatsApp chat with the message typed in; the user taps Send.",
+            "Opens a WhatsApp chat with the message typed in. With phone control on, asks Allow and can tap Send and verify it appeared in chat; otherwise the user taps Send.",
             *who,
             Schema.string("message", "The message, in the user's words and language.", required = true),
         )
@@ -63,6 +65,15 @@ object CommsTools {
                 ?: return Results.failed("bad_number", "That number doesn't look complete. Ask for it with the country code.")
             val link = Uri.parse("https://api.whatsapp.com/send?phone=$digits&text=${Uri.encode(message)}")
             val intent = Intent(Intent.ACTION_VIEW, link)
+            val service = ControlService.instance?.takeIf { !it.overlay.stopped }
+            if (service != null) {
+                return host.openApp(
+                    intent,
+                    "WhatsApp",
+                    "WhatsApp will open with your draft to ${to.name}, then ${app.shilex.android.Branding.ASSISTANT_NAME} will ask you to tap Allow before pressing Send. " +
+                        "Wait until confirmation before saying it was sent.",
+                ) { WhatsAppWorkflow.confirmAndSendAfterOpen(service, to.name, message) }
+            }
             return host.openApp(
                 intent,
                 "WhatsApp",

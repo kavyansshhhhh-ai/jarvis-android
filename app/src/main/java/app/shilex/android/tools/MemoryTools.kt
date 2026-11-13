@@ -1,6 +1,8 @@
 package app.shilex.android.tools
 
 import app.shilex.android.Diag
+import app.shilex.android.data.PersonalProfileResolver
+import app.shilex.android.data.PersonalProfileStore
 import app.shilex.android.memory.MemoryRules
 import app.shilex.android.memory.MemoryStore
 import app.shilex.android.memory.Routine
@@ -10,12 +12,24 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /**
- * Memory ("remember I parked on level 2") and routines ("Good morning"), kept on this phone.
- * Saving or changing either is held for the user's Allow after other people's text was read
- * in the turn (TurnTrust), so a message can't plant a memory or a routine.
+ * Memory ("remember I parked on level 2"), Personal Profile preferences, and routines ("Good morning"), kept on this phone.
  */
 object MemoryTools {
-    fun all(): List<PhoneTool> = listOf(Remember, Recall, Forget, RoutineSave, RoutineRun)
+    fun all(): List<PhoneTool> = listOf(GetPersonalProfile, Remember, Recall, Forget, RoutineSave, RoutineRun)
+
+    private object GetPersonalProfile : PhoneTool {
+        override val name = "get_personal_profile"
+
+        override fun declaration() = Schema.function(
+            name,
+            "Reads the user's saved Personal Profile (preferred name, favourite songs/artists/genres, preferred music app, language, style, notes).",
+        )
+
+        override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
+            val summary = PersonalProfileResolver.assistantContextSummary(PersonalProfileStore(host.context).load())
+            return Results.done(summary.ifEmpty { "Personal Profile is currently empty. The user can add details in Settings -> Personal Profile." })
+        }
+    }
 
     private object Remember : PhoneTool {
         override val name = "remember"

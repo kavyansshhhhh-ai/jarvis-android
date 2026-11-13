@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import app.shilex.android.Diag
+import app.shilex.android.audio.AudioPlaybackState
 import app.shilex.android.audio.othersPlaying
 import app.shilex.android.local.OfflineSpeech
 import org.vosk.Recognizer
@@ -234,6 +235,7 @@ class WakeListener(
     }
 
     private fun triggerAllowed(): Boolean {
+        if (AudioPlaybackState.isSpeakingOrTail()) return false
         val now = SystemClock.elapsedRealtime()
         return lastWake == 0L || now - lastWake >= WakePolicy.COOLDOWN_MS
     }

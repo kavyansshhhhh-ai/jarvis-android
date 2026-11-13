@@ -39,6 +39,26 @@ class WakePolicyTest {
             Decision.Locked,
             WakePolicy.evaluateActivation(nowMs = 20_000L, lastWakeMs = 0L, keyguardLocked = true, hasMicPermission = true),
         )
+        assertEquals(
+            Decision.SessionAlreadyActive,
+            WakePolicy.evaluateActivation(
+                nowMs = 20_000L,
+                lastWakeMs = 0L,
+                keyguardLocked = false,
+                hasMicPermission = true,
+                sessionActive = true,
+            ),
+        )
+        assertEquals(
+            Decision.AssistantSpeaking,
+            WakePolicy.evaluateActivation(
+                nowMs = 20_000L,
+                lastWakeMs = 0L,
+                keyguardLocked = false,
+                hasMicPermission = true,
+                assistantSpeaking = true,
+            ),
+        )
     }
 
     @Test

@@ -11,13 +11,17 @@ enum class WakeDotSize(
     val coreDiameterDp: Int,
     val glowDiameterDp: Int,
 ) {
-    Small("small", "Subtle", coreDiameterDp = 9, glowDiameterDp = 18),
-    Standard("standard", "Standard", coreDiameterDp = 12, glowDiameterDp = 22),
-    Large("large", "Large", coreDiameterDp = 16, glowDiameterDp = 28),
+    Small("small", "9dp", coreDiameterDp = 9, glowDiameterDp = 18),
+    Standard("standard", "12dp", coreDiameterDp = 12, glowDiameterDp = 22),
+    Large("large", "16dp", coreDiameterDp = 16, glowDiameterDp = 28),
+    MediumLarge("dp22", "22dp", coreDiameterDp = 22, glowDiameterDp = 36),
+    Prominent("dp30", "30dp", coreDiameterDp = 30, glowDiameterDp = 46),
+    ExtraLarge("dp40", "40dp", coreDiameterDp = 40, glowDiameterDp = 60),
+    Max("dp50", "50dp", coreDiameterDp = 50, glowDiameterDp = 74),
     ;
 
     /** Canvas width/height with headroom for gentle radial halo pulse without clipping. */
-    val canvasDp: Int get() = glowDiameterDp + 8
+    val canvasDp: Int get() = glowDiameterDp + 10
 
     companion object {
         fun fromKey(key: String?): WakeDotSize = entries.firstOrNull { it.key == key } ?: Standard
@@ -32,9 +36,9 @@ data class WakeDotState(
 )
 
 /**
- * Pure event/state controller for the subtle wake-activation dot.
- * Only real wake detections activate it; ordinary listening, locked screens,
- * non-interactive displays, and disabled states never trigger it.
+ * Pure event/state controller for the subtle top-center wake-activation dot.
+ * Only real wake detections activate it; active voice sessions, TTS playback, locked screens,
+ * non-interactive displays, and disabled states never trigger duplicate dots.
  */
 class WakeIndicatorController {
     private val _state = MutableStateFlow(WakeDotState())
@@ -47,11 +51,17 @@ class WakeIndicatorController {
         keyguardLocked: Boolean,
         screenInteractive: Boolean,
         durationMs: Long = DISPLAY_DURATION_MS,
+        sessionActive: Boolean = false,
+        assistantSpeaking: Boolean = false,
     ): Boolean {
-        if (!enabled || keyguardLocked || !screenInteractive) {
+        if (!enabled || keyguardLocked || !screenInteractive || sessionActive || assistantSpeaking) {
             return false
         }
-        val nextId = _state.value.triggerId + 1L
+        val current = _state.value
+        if (current.visible && nowMs - current.triggeredAtMs < DUPLICATE_DOT_WINDOW_MS) {
+            return false
+        }
+        val nextId = current.triggerId + 1L
         val effectiveDuration = clampDurationMs(durationMs)
         _state.value = WakeDotState(
             visible = true,
@@ -93,6 +103,7 @@ class WakeIndicatorController {
         const val FADE_OUT_MS = 450
         const val CLEANUP_GRACE_MS = 180L
         const val CLEANUP_DELAY_MS = DISPLAY_DURATION_MS + CLEANUP_GRACE_MS
+        const val DUPLICATE_DOT_WINDOW_MS = 1_500L
 
         fun clampDurationMs(durationMs: Long): Long = durationMs.coerceIn(MIN_DURATION_MS, MAX_DURATION_MS)
 
@@ -131,7 +142,17 @@ object WakeIndicator {
         keyguardLocked: Boolean,
         screenInteractive: Boolean,
         durationMs: Long = WakeIndicatorController.DISPLAY_DURATION_MS,
-    ): Boolean = controller.onWakeDetected(nowMs, enabled, keyguardLocked, screenInteractive, durationMs)
+        sessionActive: Boolean = false,
+        assistantSpeaking: Boolean = false,
+    ): Boolean = controller.onWakeDetected(
+        nowMs = nowMs,
+        enabled = enabled,
+        keyguardLocked = keyguardLocked,
+        screenInteractive = screenInteractive,
+        durationMs = durationMs,
+        sessionActive = sessionActive,
+        assistantSpeaking = assistantSpeaking,
+    )
 
     fun expireIfElapsed(nowMs: Long): Boolean = controller.expireIfElapsed(nowMs)
 

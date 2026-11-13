@@ -1,8 +1,12 @@
 package app.shilex.android.ui
 
 import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -17,8 +21,8 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -52,6 +56,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -66,14 +71,25 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalGraphicsContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -87,6 +103,9 @@ import app.shilex.android.task.Task
 import app.shilex.android.wake.WakeIndicator
 import app.shilex.android.wake.WakeIndicatorController
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 private enum class Tab(val label: String, val icon: ImageVector) {
     Home("Home", Icons.Filled.Home),
@@ -107,6 +126,18 @@ fun ShilexApp(assistant: AssistantViewModel) {
     var onboarded by rememberSaveable { mutableStateOf(assistant.onboarded) }
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var modalOverlayActive by remember { mutableStateOf(false) }
+
+    val photoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        assistant.onPhotoPicked(uri)
+    }
+
+    LaunchedEffect(state.photoPickRequestId) {
+        if (state.photoPickRequestId > 0L) {
+            photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        }
+    }
 
     LaunchedEffect(wakeDot.visible, wakeDot.triggerId, wakeDot.durationMs) {
         if (wakeDot.visible) {
@@ -254,7 +285,7 @@ private fun Content(
             }
         }
 
-        // Floating Liquid Glass Capsule Navigation Dock
+        // Interactive Finger-Tracking Floating Liquid Glass Capsule Navigation Dock
         FloatingLiquidGlassDock(
             selectedTab = tab,
             onSelectTab = setTab,
@@ -278,11 +309,26 @@ private fun FloatingLiquidGlassDock(
 ) {
     val dockShape = RoundedCornerShape(34.dp)
     var dockOffset by remember { mutableStateOf(Offset.Zero) }
+    val haptic = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+
+    var isPressed by remember { mutableStateOf(false) }
+    var isDragging by remember { mutableStateOf(false) }
+    var previewTab by remember { mutableIntStateOf(selectedTab) }
+    val dockScale by animateFloatAsState(
+        targetValue = if (isPressed) 1.018f else 1f,
+        animationSpec = spring(dampingRatio = 0.72f, stiffness = Spring.StiffnessMediumLow),
+        label = "dockPressScale",
+    )
 
     Box(
         modifier = modifier
             .fillMaxWidth()
             .height(66.dp)
+            .graphicsLayer {
+                scaleX = dockScale
+                scaleY = dockScale
+            }
             .onGloballyPositioned { dockOffset = it.positionInRoot() }
             .shadow(
                 elevation = 20.dp,
@@ -328,7 +374,7 @@ private fun FloatingLiquidGlassDock(
                 .border(1.dp, GlassDockBorderGradient, dockShape),
         )
 
-        // Sliding Liquid Glass lens + tab items
+        // Finger-tracking sliding Liquid Glass lens + tab items
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
@@ -337,100 +383,197 @@ private fun FloatingLiquidGlassDock(
         ) {
             val count = Tab.entries.size
             val slotWidth = maxWidth / count
-            val lensX by animateDpAsState(
-                targetValue = slotWidth * selectedTab,
-                animationSpec = spring(
-                    dampingRatio = 0.72f,
-                    stiffness = Spring.StiffnessMediumLow,
-                ),
-                label = "dockLensOffset",
+            val density = LocalDensity.current
+            val slotWidthPx = with(density) { slotWidth.toPx().coerceAtLeast(1f) }
+            val padPx = with(density) { 2.dp.toPx() }
+            val lensX = remember { Animatable(selectedTab * slotWidthPx) }
+
+            LaunchedEffect(selectedTab, slotWidthPx, isDragging) {
+                if (!isDragging) {
+                    previewTab = selectedTab
+                    lensX.animateTo(
+                        targetValue = selectedTab * slotWidthPx,
+                        animationSpec = spring(
+                            dampingRatio = 0.72f,
+                            stiffness = Spring.StiffnessMediumLow,
+                        ),
+                    )
+                }
+            }
+
+            val activeDisplayTab = if (isDragging) previewTab else selectedTab
+            val lensScale by animateFloatAsState(
+                targetValue = if (isPressed || isDragging) 1.045f else 1f,
+                animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMedium),
+                label = "lensScale",
             )
             val lensShape = RoundedCornerShape(28.dp)
 
-            // Luminous frosted Liquid Glass capsule lens behind active tab
             Box(
                 modifier = Modifier
-                    .offset(x = lensX + 2.dp)
-                    .width((slotWidth - 4.dp).coerceAtLeast(1.dp))
-                    .height(54.dp)
-                    .clip(lensShape)
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(
-                                Color(0x30FFFFFF),
-                                Color(0x14FFFFFF),
-                            ),
-                        ),
-                    )
-                    .background(
-                        Brush.radialGradient(
-                            listOf(
-                                ElectricCyan.copy(alpha = 0.14f),
-                                NeonViolet.copy(alpha = 0.06f),
-                                Color.Transparent,
-                            ),
-                        ),
-                    )
-                    .border(
-                        0.8.dp,
-                        Brush.verticalGradient(
-                            listOf(
-                                Color(0x6BFFFFFF),
-                                Color(0x1FFFFFFF),
-                                Color(0x33FFFFFF),
-                            ),
-                        ),
-                        lensShape,
-                    ),
-            )
+                    .fillMaxSize()
+                    .pointerInput(count, slotWidthPx) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            isPressed = true
+                            val startPos = down.position
+                            var draggingHorizontally = false
+                            var cancelledByVerticalScroll = false
+                            var lastHoverTab = selectedTab
+                            var currentX = down.position.x
 
-            Row(
-                modifier = Modifier.fillMaxSize(),
-                verticalAlignment = Alignment.CenterVertically,
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) {
+                                    change.consume()
+                                    break
+                                }
+                                currentX = change.position.x
+                                val dx = currentX - startPos.x
+                                val dy = change.position.y - startPos.y
+
+                                if (!draggingHorizontally && abs(dy) > viewConfiguration.touchSlop * 1.4f && abs(dy) > abs(dx) * 1.3f) {
+                                    cancelledByVerticalScroll = true
+                                    break
+                                }
+
+                                if (!draggingHorizontally && abs(dx) > viewConfiguration.touchSlop * 0.6f && abs(dx) >= abs(dy)) {
+                                    draggingHorizontally = true
+                                    isDragging = true
+                                }
+
+                                if (draggingHorizontally) {
+                                    change.consume()
+                                    val maxOffset = (count - 1) * slotWidthPx
+                                    val targetOffset = (currentX - slotWidthPx / 2f).coerceIn(0f, maxOffset)
+                                    val nearest = (targetOffset / slotWidthPx).roundToInt().coerceIn(0, count - 1)
+                                    if (nearest != lastHoverTab) {
+                                        lastHoverTab = nearest
+                                        previewTab = nearest
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    }
+                                    scope.launch {
+                                        lensX.snapTo(targetOffset)
+                                    }
+                                }
+                            }
+
+                            isPressed = false
+                            val finalTab = when {
+                                cancelledByVerticalScroll -> selectedTab
+                                draggingHorizontally -> lastHoverTab
+                                else -> ((currentX / slotWidthPx).toInt()).coerceIn(0, count - 1)
+                            }
+                            isDragging = false
+                            if (!cancelledByVerticalScroll) {
+                                if (finalTab != selectedTab) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onSelectTab(finalTab)
+                                }
+                            }
+                            scope.launch {
+                                lensX.animateTo(
+                                    targetValue = finalTab * slotWidthPx,
+                                    animationSpec = spring(
+                                        dampingRatio = 0.72f,
+                                        stiffness = Spring.StiffnessMediumLow,
+                                    ),
+                                )
+                            }
+                        }
+                    },
             ) {
-                Tab.entries.forEach { item ->
-                    val selected = selectedTab == item.ordinal
-                    val contentScale by animateFloatAsState(
-                        targetValue = if (selected) 1.04f else 0.96f,
-                        animationSpec = spring(
-                            dampingRatio = 0.75f,
-                            stiffness = Spring.StiffnessMedium,
+                // Luminous frosted Liquid Glass capsule lens behind hovered/active tab
+                Box(
+                    modifier = Modifier
+                        .offset { IntOffset((lensX.value + padPx).roundToInt(), 0) }
+                        .align(Alignment.CenterStart)
+                        .width((slotWidth - 4.dp).coerceAtLeast(1.dp))
+                        .height(54.dp)
+                        .graphicsLayer {
+                            scaleX = lensScale
+                            scaleY = lensScale
+                        }
+                        .clip(lensShape)
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    if (isPressed || isDragging) Color(0x40FFFFFF) else Color(0x30FFFFFF),
+                                    Color(0x14FFFFFF),
+                                ),
+                            ),
+                        )
+                        .background(
+                            Brush.radialGradient(
+                                listOf(
+                                    ElectricCyan.copy(alpha = if (isPressed || isDragging) 0.22f else 0.14f),
+                                    NeonViolet.copy(alpha = 0.08f),
+                                    Color.Transparent,
+                                ),
+                            ),
+                        )
+                        .border(
+                            0.9.dp,
+                            Brush.verticalGradient(
+                                listOf(
+                                    Color(0x7AFFFFFF),
+                                    Color(0x22FFFFFF),
+                                    Color(0x3BFFFFFF),
+                                ),
+                            ),
+                            lensShape,
                         ),
-                        label = "tabScale",
-                    )
-                    val tint by animateColorAsState(
-                        targetValue = if (selected) PureWhite else SlateMuted,
-                        animationSpec = tween(180),
-                        label = "tabTint",
-                    )
+                )
 
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .scale(contentScale)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) { onSelectTab(item.ordinal) },
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        Icon(
-                            imageVector = item.icon,
-                            contentDescription = item.label,
-                            tint = tint,
-                            modifier = Modifier.size(21.dp),
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Tab.entries.forEach { item ->
+                        val selected = activeDisplayTab == item.ordinal
+                        val contentScale by animateFloatAsState(
+                            targetValue = if (selected) 1.05f else 0.96f,
+                            animationSpec = spring(
+                                dampingRatio = 0.75f,
+                                stiffness = Spring.StiffnessMedium,
+                            ),
+                            label = "tabScale",
                         )
-                        Text(
-                            text = item.label,
-                            fontSize = 11.sp,
-                            lineHeight = 13.sp,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                            color = tint,
-                            maxLines = 1,
-                            modifier = Modifier.padding(top = 2.dp),
+                        val tint by animateColorAsState(
+                            targetValue = if (selected) PureWhite else SlateMuted,
+                            animationSpec = tween(160),
+                            label = "tabTint",
                         )
+
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .scale(contentScale)
+                                .semantics {
+                                    role = Role.Tab
+                                    this.selected = (selectedTab == item.ordinal)
+                                },
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Icon(
+                                imageVector = item.icon,
+                                contentDescription = item.label,
+                                tint = tint,
+                                modifier = Modifier.size(21.dp),
+                            )
+                            Text(
+                                text = item.label,
+                                fontSize = 11.sp,
+                                lineHeight = 13.sp,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                color = tint,
+                                maxLines = 1,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
                     }
                 }
             }

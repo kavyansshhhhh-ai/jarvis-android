@@ -25,8 +25,24 @@ class ControlService : AccessibilityService() {
     private val overlayLazy = lazy { ControlOverlay(this) }
     val overlay: ControlOverlay by overlayLazy
 
+    data class NodeMeta(
+        val number: Int,
+        val viewId: String,
+        val label: String,
+        val role: String,
+        val packageName: String,
+        val bounds: Rect,
+    )
+
+    sealed interface ScreenshotCapture {
+        data class Ok(val bitmap: Bitmap) : ScreenshotCapture
+        data object SecureBlocked : ScreenshotCapture
+        data class Unavailable(val reason: String) : ScreenshotCapture
+    }
+
     // Numbers from the last ui_read, so "tap 4" means what the model just saw.
     @Volatile private var lastNodes: Map<Int, AccessibilityNodeInfo> = emptyMap()
+    @Volatile private var lastMeta: Map<Int, NodeMeta> = emptyMap()
     @Volatile private var lastElementsList: List<ScreenElement> = emptyList()
 
     override fun onServiceConnected() {
@@ -52,6 +68,8 @@ class ControlService : AccessibilityService() {
         val more: Boolean,
         val sensitiveAuth: Boolean = false,
         val restrictedBySystem: Boolean = false,
+        val meta: Map<Int, NodeMeta> = emptyMap(),
+        val signature: String = "",
     ) {
         val blocked get() = ControlRules.blocked(packageName)
         val upiApp get() = ControlRules.isSupportedUpiApp(packageName)
@@ -60,11 +78,27 @@ class ControlService : AccessibilityService() {
 
     fun lastElements(): List<ScreenElement> = lastElementsList
 
-    fun foregroundPackage(): String = rootInActiveWindow?.packageName?.toString().orEmpty()
+    fun lastMetadata(): Map<Int, NodeMeta> = lastMeta
 
-    /** True when the active window shows a visible password, PIN, MPIN, OTP, or CVV prompt/field. */
+    fun foregroundPackage(): String = activeRoot()?.packageName?.toString().orEmpty()
+
+    /** Finds the primary active non-JARVIS application or dialog root across windows. */
+    private fun activeRoot(): AccessibilityNodeInfo? {
+        val root = rootInActiveWindow
+        val rootPkg = root?.packageName?.toString().orEmpty()
+        val appWindows = runCatching {
+            windows.filter { win ->
+                win.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION &&
+                    win.root?.packageName?.toString()?.let { it.isNotEmpty() && it != packageName } == true
+            }.sortedByDescending { it.layer }
+        }.getOrDefault(emptyList())
+        if (root != null && rootPkg.isNotEmpty() && rootPkg != packageName) return root
+        return appWindows.firstOrNull()?.root ?: root
+    }
+
+    /** True when any visible app window shows a password, PIN, MPIN, OTP, or CVV prompt/field. */
     fun isSensitiveAuthActive(): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = activeRoot() ?: return false
         fun visit(node: AccessibilityNodeInfo): Boolean {
             if (!node.isVisibleToUser) return false
             if (isNodeDataSensitive(node)) return false
@@ -80,23 +114,26 @@ class ControlService : AccessibilityService() {
 
     /** Reads the app in front. Blocked apps, sensitive PIN/OTP/password screens, and system-restricted nodes come back without contents. */
     fun snapshot(): Snapshot? {
-        val root = rootInActiveWindow ?: return null
+        val root = activeRoot() ?: return null
         val pkg = root.packageName?.toString().orEmpty()
         val label = runCatching {
             packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
         }.getOrDefault(pkg)
         if (ControlRules.blocked(pkg)) {
             lastNodes = emptyMap()
+            lastMeta = emptyMap()
             lastElementsList = emptyList()
             return Snapshot(pkg, label, emptyList(), false)
         }
         if (isNodeDataSensitive(root)) {
             lastNodes = emptyMap()
+            lastMeta = emptyMap()
             lastElementsList = emptyList()
             return Snapshot(pkg, label, emptyList(), false, restrictedBySystem = true)
         }
         val elements = mutableListOf<ScreenElement>()
         val nodes = mutableMapOf<Int, AccessibilityNodeInfo>()
+        val metaMap = mutableMapOf<Int, NodeMeta>()
         var more = false
         var sensitiveAuth = false
         var restrictedBySystem = false
@@ -106,9 +143,10 @@ class ControlService : AccessibilityService() {
                 restrictedBySystem = true
                 return
             }
-            val viewId = node.viewIdResourceName?.substringAfterLast('/').orEmpty()
+            val rawViewId = node.viewIdResourceName?.substringAfterLast('/').orEmpty()
+            val cleanViewId = cleanViewIdLabel(rawViewId)
             val own = ownLabel(node)
-            if (node.isPassword || ControlRules.isSensitiveAuthCue(own, viewId, node.isPassword)) {
+            if (node.isPassword || ControlRules.isSensitiveAuthCue(own, rawViewId, node.isPassword)) {
                 sensitiveAuth = true
                 return
             }
@@ -120,16 +158,26 @@ class ControlService : AccessibilityService() {
                 else -> false
             }
             if (include && elements.size < ScreenText.MAX_ELEMENTS) {
-                val text = own.ifEmpty { childText(node) }.ifEmpty { viewId }
+                val text = own.ifEmpty { childText(node) }.ifEmpty { cleanViewId }
                 if (text.isNotEmpty() || node.isEditable) {
                     val number = elements.size + 1
-                    val value = if (node.isEditable && !ControlRules.isSensitiveCredentialField(text, viewId, node.isPassword)) {
+                    val resolvedRole = role(node)
+                    val value = if (node.isEditable && !ControlRules.isSensitiveCredentialField(text, rawViewId, node.isPassword)) {
                         node.text?.toString().orEmpty()
                     } else {
                         ""
                     }
-                    elements += ScreenElement(number, role(node), text, value)
+                    val bounds = Rect().also(node::getBoundsInScreen)
+                    elements += ScreenElement(number, resolvedRole, text, value)
                     nodes[number] = node
+                    metaMap[number] = NodeMeta(
+                        number = number,
+                        viewId = rawViewId,
+                        label = text,
+                        role = resolvedRole,
+                        packageName = node.packageName?.toString().orEmpty(),
+                        bounds = bounds,
+                    )
                 }
             }
             for (i in 0 until node.childCount) {
@@ -140,30 +188,77 @@ class ControlService : AccessibilityService() {
         visit(root, false)
         if (sensitiveAuth) {
             lastNodes = emptyMap()
+            lastMeta = emptyMap()
             lastElementsList = emptyList()
             return Snapshot(pkg, label, emptyList(), false, sensitiveAuth = true)
         }
         lastNodes = nodes
+        lastMeta = metaMap
         lastElementsList = elements.toList()
+        val sig = "$pkg:${elements.size}:${elements.take(12).joinToString("|") { "${it.label}=${it.value}" }}"
         return Snapshot(
             pkg,
             label,
             elements,
             more || elements.size >= ScreenText.MAX_ELEMENTS,
             restrictedBySystem = restrictedBySystem && elements.isEmpty(),
+            meta = metaMap,
+            signature = sig,
         )
     }
 
     private fun isNodeDataSensitive(node: AccessibilityNodeInfo): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && node.isAccessibilityDataSensitive
 
-    fun node(number: Int): AccessibilityNodeInfo? = lastNodes[number]?.takeIf { it.refresh() }
+    /** Returns the cached node if still attached, else recovers a matching node by metadata on screen. */
+    fun node(number: Int): AccessibilityNodeInfo? {
+        val existing = lastNodes[number]
+        if (existing != null && runCatching { existing.refresh() }.getOrDefault(false) && existing.isVisibleToUser) {
+            return existing
+        }
+        val meta = lastMeta[number] ?: return null
+        val recovered = recoverNode(meta)
+        if (recovered != null) {
+            Diag.i("control: recovered stale node #$number (${meta.label})")
+        }
+        return recovered
+    }
+
+    private fun recoverNode(meta: NodeMeta): AccessibilityNodeInfo? {
+        val root = activeRoot() ?: return null
+        var best: AccessibilityNodeInfo? = null
+        var bestScore = 0
+        val candidateRect = Rect()
+        fun score(n: AccessibilityNodeInfo): Int {
+            val viewId = n.viewIdResourceName?.substringAfterLast('/').orEmpty()
+            val lbl = ownLabel(n).ifEmpty { childText(n) }.ifEmpty { cleanViewIdLabel(viewId) }
+            val r = role(n)
+            var s = 0
+            if (meta.viewId.isNotEmpty() && viewId == meta.viewId) s += 4
+            if (meta.label.isNotEmpty() && lbl.equals(meta.label, ignoreCase = true)) s += 3
+            if (r == meta.role) s += 1
+            n.getBoundsInScreen(candidateRect)
+            if (!meta.bounds.isEmpty && Rect.intersects(meta.bounds, candidateRect)) s += 2
+            return s
+        }
+        fun visit(n: AccessibilityNodeInfo) {
+            if (!n.isVisibleToUser || isNodeDataSensitive(n)) return
+            val s = score(n)
+            if (s > bestScore && s >= 4) {
+                bestScore = s
+                best = n
+            }
+            for (i in 0 until n.childCount) n.getChild(i)?.let(::visit)
+        }
+        visit(root)
+        return best
+    }
 
     /** The first visible node (screen order) that matches [test]. */
     fun findFirst(test: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {
-        val root = rootInActiveWindow ?: return null
+        val root = activeRoot() ?: return null
         fun visit(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-            if (!node.isVisibleToUser) return null
+            if (!node.isVisibleToUser || isNodeDataSensitive(node)) return null
             if (test(node)) return node
             for (i in 0 until node.childCount) node.getChild(i)?.let(::visit)?.let { return it }
             return null
@@ -171,13 +266,17 @@ class ControlService : AccessibilityService() {
         return visit(root)
     }
 
-    fun labelOf(node: AccessibilityNodeInfo): String = ownLabel(node).ifEmpty { childText(node) }
+    fun labelOf(node: AccessibilityNodeInfo): String {
+        val viewId = node.viewIdResourceName?.substringAfterLast('/').orEmpty()
+        return ownLabel(node).ifEmpty { childText(node) }.ifEmpty { cleanViewIdLabel(viewId) }
+    }
 
     fun click(node: AccessibilityNodeInfo): Boolean {
         var target: AccessibilityNodeInfo? = node
         while (target != null && !target.isClickable) target = target.parent
         if (target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) return true
         val bounds = Rect().also(node::getBoundsInScreen)
+        if (bounds.isEmpty || bounds.width() <= 0 || bounds.height() <= 0) return false
         return tap(bounds.exactCenterX(), bounds.exactCenterY())
     }
 
@@ -190,11 +289,11 @@ class ControlService : AccessibilityService() {
     }
 
     fun focusedField(): AccessibilityNodeInfo? =
-        rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }
+        activeRoot()?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }
 
     /** Scrolls the biggest scrollable area; "down" shows what is further down. */
     fun scroll(down: Boolean): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = activeRoot() ?: return false
         var best: AccessibilityNodeInfo? = null
         var bestArea = 0
         fun visit(node: AccessibilityNodeInfo) {
@@ -216,12 +315,11 @@ class ControlService : AccessibilityService() {
         return swipe(x, from, x, to)
     }
 
-    /**
-     * The screen as a software bitmap, or null when Android refuses: before Android 11, or a
-     * protected window (banking, payments and password screens come back as an error).
-     */
-    suspend fun screenshot(): Bitmap? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+    /** Captures the screen and preserves whether Android refused due to a FLAG_SECURE window. */
+    suspend fun captureScreenshotResult(): ScreenshotCapture {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return ScreenshotCapture.Unavailable("Screenshots require Android 11 or newer.")
+        }
         return suspendCancellableCoroutine { done ->
             takeScreenshot(
                 Display.DEFAULT_DISPLAY,
@@ -231,17 +329,31 @@ class ControlService : AccessibilityService() {
                         val shot = result.hardwareBuffer.use { buffer ->
                             Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
                         }
-                        done.resume(shot)
+                        if (shot != null) {
+                            done.resume(ScreenshotCapture.Ok(shot))
+                        } else {
+                            done.resume(ScreenshotCapture.Unavailable("The screenshot bitmap was empty."))
+                        }
                     }
 
                     override fun onFailure(errorCode: Int) {
                         Diag.w("control: screenshot refused ($errorCode)")
-                        done.resume(null)
+                        if (errorCode == ERROR_TAKE_SCREENSHOT_SECURE_WINDOW) {
+                            done.resume(ScreenshotCapture.SecureBlocked)
+                        } else {
+                            done.resume(ScreenshotCapture.Unavailable("Screenshot unavailable (error $errorCode)."))
+                        }
                     }
                 },
             )
         }
     }
+
+    /**
+     * The screen as a software bitmap, or null when Android refuses: before Android 11, or a
+     * protected window (banking, payments and password screens come back as an error).
+     */
+    suspend fun screenshot(): Bitmap? = (captureScreenshotResult() as? ScreenshotCapture.Ok)?.bitmap
 
     /** Taps a screen point (click-by-sight). Callers check [nodeAt] and the risk first. */
     fun tapAt(x: Float, y: Float): Boolean = !overlay.confirming && tap(x, y)
@@ -285,6 +397,13 @@ class ControlService : AccessibilityService() {
 
     private fun ownLabel(node: AccessibilityNodeInfo): String =
         (node.text ?: node.contentDescription ?: node.hintText)?.toString()?.trim().orEmpty()
+
+    private fun cleanViewIdLabel(viewId: String): String = viewId
+        .substringAfterLast('/')
+        .replace('_', ' ')
+        .replace('-', ' ')
+        .replace(Regex("^(btn|iv|tv|et|ic|img)\\s+", RegexOption.IGNORE_CASE), "")
+        .trim()
 
     private fun childText(node: AccessibilityNodeInfo): String {
         val parts = mutableListOf<String>()

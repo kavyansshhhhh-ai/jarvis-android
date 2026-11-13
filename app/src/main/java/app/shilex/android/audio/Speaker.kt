@@ -33,6 +33,7 @@ class Speaker {
         val now = SystemClock.elapsedRealtime()
         val durationMs = pcm.size / 2 * 1000L / sampleRate
         audibleUntil = maxOf(audibleUntil, now) + durationMs + if (first) LEAD_IN_MS else 0
+        AudioPlaybackState.onLiveSpeakerState(active = true, nowMs = now)
         writer.execute {
             if (gen != generation) return@execute
             val out = trackFor(sampleRate)
@@ -53,6 +54,7 @@ class Speaker {
     /** The server finished this reply; the speaker running dry after it is expected. */
     fun endReply() {
         replyOpen = false
+        AudioPlaybackState.onLiveSpeakerState(active = false)
     }
 
     /** Times the speaker ran dry in the middle of a reply since the last call. */
@@ -66,6 +68,7 @@ class Speaker {
         generation++
         audibleUntil = 0
         replyOpen = false
+        AudioPlaybackState.onLiveSpeakerState(active = false)
         writer.execute {
             track?.run {
                 pause()
@@ -79,6 +82,7 @@ class Speaker {
     fun release() {
         generation++
         audibleUntil = 0
+        AudioPlaybackState.onLiveSpeakerState(active = false)
         writer.execute {
             track?.release()
             track = null

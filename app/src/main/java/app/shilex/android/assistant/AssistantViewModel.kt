@@ -1,17 +1,23 @@
 package app.shilex.android.assistant
 
 import android.app.Application
+import android.content.Intent
+import android.net.Uri
 import android.os.PowerManager
 import androidx.lifecycle.AndroidViewModel
+import app.shilex.android.data.PersonalProfile
+import app.shilex.android.data.PersonalProfileStore
 import app.shilex.android.data.Settings
 import app.shilex.android.learn.Habits
 import app.shilex.android.local.ActivityLog
 import app.shilex.android.local.LocalCommand
 import app.shilex.android.local.LocalPhase
 import app.shilex.android.local.LocalTurn
+import app.shilex.android.orb.WakeActivationOverlay
 import app.shilex.android.task.Task
 import app.shilex.android.task.TaskTracker
-import app.shilex.android.orb.WakeActivationOverlay
+import app.shilex.android.tools.InstalledAppInfo
+import app.shilex.android.tools.InstalledAppsRegistry
 import app.shilex.android.wake.VoiceProfile
 import app.shilex.android.wake.VoiceSetup
 import app.shilex.android.wake.WakeDotSize
@@ -27,6 +33,7 @@ import kotlinx.coroutines.flow.asStateFlow
 /** The screen's handle on the voice session, which outlives the screen. */
 class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     private val session = VoiceSession.get(app)
+    private val profileStore = PersonalProfileStore(app)
 
     val state: StateFlow<UiState> = session.state
     val level: StateFlow<Float> = session.level
@@ -47,6 +54,14 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     /** Live event state for the tiny top-center wake activation dot. */
     val wakeDot: StateFlow<WakeDotState> = WakeIndicator.state
 
+    private val _personalProfile = MutableStateFlow(profileStore.load())
+    val personalProfile: StateFlow<PersonalProfile> = _personalProfile.asStateFlow()
+
+    private val _installedApps = MutableStateFlow(
+        runCatching { InstalledAppsRegistry.apps(app) }.getOrDefault(emptyList()),
+    )
+    val installedApps: StateFlow<List<InstalledAppInfo>> = _installedApps.asStateFlow()
+
     // Android holds preference listeners weakly, so keep this one referenced.
     private val watcher = settings.watch {
         _wakeWord.value = settings.wakeWord
@@ -62,6 +77,29 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     fun quick(command: LocalCommand): String = local.runNow(command)
 
     fun clearActivity() = ActivityLog.clear()
+
+    fun savePersonalProfile(profile: PersonalProfile) {
+        val clean = profile.sanitized()
+        profileStore.save(clean)
+        _personalProfile.value = clean
+    }
+
+    fun clearPersonalProfile() {
+        profileStore.clear()
+        _personalProfile.value = PersonalProfile()
+    }
+
+    fun refreshInstalledApps() {
+        _installedApps.value = InstalledAppsRegistry.apps(getApplication(), forceRefresh = true)
+    }
+
+    fun launchInstalledApp(packageName: String): Boolean {
+        val context = getApplication<Application>()
+        val launch = context.packageManager.getLaunchIntentForPackage(packageName) ?: return false
+        return runCatching {
+            context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.isSuccess
+    }
 
     private val habits get() = Habits.get(getApplication())
 
@@ -123,6 +161,8 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     fun interrupt() = session.interrupt()
 
     fun permissionAnswered(granted: Boolean) = session.permissionAnswered(granted)
+
+    fun onPhotoPicked(uri: Uri?) = session.onPhotoPicked(uri)
 
     fun micUnavailable() = session.micUnavailable()
 

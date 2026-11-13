@@ -1,10 +1,22 @@
 package app.shilex.android.local
 
+import app.shilex.android.audio.AudioStream
+
+enum class SystemPanelTarget(val label: String) {
+    Notifications("Notification panel"),
+    QuickSettings("Quick Settings"),
+    Wifi("Wi-Fi settings"),
+    Hotspot("Hotspot settings"),
+    Bluetooth("Bluetooth settings"),
+    Brightness("Brightness & Display settings"),
+    Battery("Battery settings"),
+}
+
 /** A request the phone handles by itself, without Gemini. */
 sealed interface LocalCommand {
-    data class SetVolume(val percent: Int) : LocalCommand
-    data class StepVolume(val up: Boolean) : LocalCommand
-    data class Mute(val on: Boolean) : LocalCommand
+    data class SetVolume(val percent: Int, val stream: AudioStream = AudioStream.Media) : LocalCommand
+    data class StepVolume(val up: Boolean, val stream: AudioStream = AudioStream.Media) : LocalCommand
+    data class Mute(val on: Boolean, val mediaOnly: Boolean = false) : LocalCommand
     data class Media(val key: MediaKey) : LocalCommand
     data class Torch(val on: Boolean) : LocalCommand
     data object Battery : LocalCommand
@@ -14,6 +26,9 @@ sealed interface LocalCommand {
     /** [hour] as said (1-12 with a [period], or 0-23); null period means "the next one". */
     data class Alarm(val hour: Int, val minute: Int, val period: Period?) : LocalCommand
     data class OpenApp(val name: String) : LocalCommand
+    data class SystemPanel(val target: SystemPanelTarget) : LocalCommand
+    data object ListApps : LocalCommand
+    data class SearchApps(val query: String) : LocalCommand
     data object Stop : LocalCommand
 }
 
@@ -22,10 +37,9 @@ enum class MediaKey { Play, Pause, Next, Previous }
 enum class Period { Am, Pm }
 
 /**
- * Matches short English and Hinglish requests ("YouTube kholo", "volume 30 percent kar do")
- * to [LocalCommand]s. Pure and deterministic, so it is unit-tested. Anything it isn't sure
- * about returns null and goes to Gemini instead: a wrong local guess is worse than a slower
- * right answer.
+ * Matches short English and Hinglish requests ("YouTube kholo", "volume 30 percent kar do",
+ * "Quick settings kholo", "list installed apps") to [LocalCommand]s. Pure and deterministic,
+ * so it is unit-tested. Anything unsure returns null and goes to Gemini instead.
  */
 object LocalRouter {
     /** The first recogniser alternative that matches wins. */
@@ -35,13 +49,25 @@ object LocalRouter {
         val s = normalize(text)
         if (s.isEmpty()) return null
         if (MORE.containsMatchIn(s)) return null // several requests or a message: Gemini's job
-        return stop(s) ?: timer(s) ?: alarm(s) ?: torch(s) ?: volume(s) ?: mute(s) ?: media(s) ?: battery(s) ?: time(s)
+        return stop(s)
+            ?: timer(s)
+            ?: alarm(s)
+            ?: systemPanel(s)
+            ?: appsQuery(s)
+            ?: torch(s)
+            ?: volume(s)
+            ?: mute(s)
+            ?: media(s)
+            ?: battery(s)
+            ?: time(s)
             ?: openApp(s)
     }
 
     fun normalize(text: String): String {
         val words = text.lowercase()
             .replace("%", " percent ")
+            .replace("wi-fi", "wifi")
+            .replace("wi fi", "wifi")
             .replace(Regex("\\ba\\.?\\s?m\\b\\.?"), "am")
             .replace(Regex("\\bp\\.?\\s?m\\b\\.?"), "pm")
             .replace(Regex("[^a-z0-9: ]"), " ")
@@ -56,7 +82,7 @@ object LocalRouter {
         return s.replace(Regex("\\s+"), " ").trim()
     }
 
-    /** "thirty five" → "35", "one hundred" → "100"; recognisers spell numbers out. */
+    /** "thirty five" -> "35", "one hundred" -> "100"; recognisers spell numbers out. */
     fun numbers(text: String): String {
         val out = mutableListOf<String>()
         for (word in text.split(" ")) {
@@ -109,6 +135,31 @@ object LocalRouter {
         return LocalCommand.Alarm(hour, minute, period)
     }
 
+    private fun systemPanel(s: String): LocalCommand? {
+        val asksOpen = has(s, "open", "show", "kholo", "khol", "kholiye", "pull", "down", "dikhao", "settings", "panel")
+        if (!asksOpen) return null
+        return when {
+            has(s, "quick settings", "quick setting", "quicksettings") -> LocalCommand.SystemPanel(SystemPanelTarget.QuickSettings)
+            has(s, "notification panel", "notification shade", "notifications", "notification") -> LocalCommand.SystemPanel(SystemPanelTarget.Notifications)
+            has(s, "hotspot", "tethering") -> LocalCommand.SystemPanel(SystemPanelTarget.Hotspot)
+            has(s, "wifi") -> LocalCommand.SystemPanel(SystemPanelTarget.Wifi)
+            has(s, "bluetooth") -> LocalCommand.SystemPanel(SystemPanelTarget.Bluetooth)
+            has(s, "brightness", "display") -> LocalCommand.SystemPanel(SystemPanelTarget.Brightness)
+            has(s, "battery") && has(s, "settings", "setting") -> LocalCommand.SystemPanel(SystemPanelTarget.Battery)
+            else -> null
+        }
+    }
+
+    private fun appsQuery(s: String): LocalCommand? {
+        if (LIST_APPS.containsMatchIn(s)) return LocalCommand.ListApps
+        val searchMatch = SEARCH_APP_INSTALLED.find(s) ?: SEARCH_APP_IS_INSTALLED.find(s) ?: SEARCH_APP_KAUN.find(s)
+        if (searchMatch != null) {
+            val q = searchMatch.groupValues[1].trim()
+            if (q.isNotEmpty() && q.length <= 40) return LocalCommand.SearchApps(q)
+        }
+        return null
+    }
+
     private fun torch(s: String): LocalCommand? {
         if (!has(s, "torch", "flashlight", "flash light", "flash")) return null
         return when {
@@ -120,20 +171,33 @@ object LocalRouter {
 
     private fun volume(s: String): LocalCommand? {
         if (!has(s, "volume", "awaaz", "aawaz", "awaz", "sound")) return null
-        Regex("\\b(\\d{1,3})\\b").find(s)?.let { return LocalCommand.SetVolume(it.groupValues[1].toInt().coerceIn(0, 100)) }
+        val stream = detectStream(s)
+        Regex("\\b(\\d{1,3})\\b").find(s)?.let {
+            return LocalCommand.SetVolume(it.groupValues[1].toInt().coerceIn(0, 100), stream)
+        }
         return when {
-            has(s, "max", "maximum", "full", "poori", "pura", "poora") -> LocalCommand.SetVolume(100)
-            has(s, "unmute", "wapas") -> LocalCommand.Mute(false)
-            has(s, "mute", "band", "zero") -> LocalCommand.Mute(true)
-            has(s, "up", "badha", "badhao", "increase", "louder", "tez", "zyada", "high", "raise") -> LocalCommand.StepVolume(true)
-            has(s, "down", "kam", "ghata", "ghatao", "decrease", "lower", "dheere", "dheema", "low", "reduce") -> LocalCommand.StepVolume(false)
+            has(s, "max", "maximum", "full", "poori", "pura", "poora") -> LocalCommand.SetVolume(100, stream)
+            has(s, "unmute", "wapas") -> LocalCommand.Mute(on = false, mediaOnly = stream == AudioStream.Media && has(s, "media"))
+            has(s, "mute", "band", "zero") -> LocalCommand.Mute(on = true, mediaOnly = has(s, "media"))
+            has(s, "up", "badha", "badhao", "increase", "louder", "tez", "zyada", "high", "raise") -> LocalCommand.StepVolume(true, stream)
+            has(s, "down", "kam", "ghata", "ghatao", "decrease", "lower", "dheere", "dheema", "low", "reduce") -> LocalCommand.StepVolume(false, stream)
             else -> null
         }
     }
 
+    private fun detectStream(s: String): AudioStream = when {
+        has(s, "ring", "ringtone", "ringer") -> AudioStream.Ring
+        has(s, "notification", "notifications") -> AudioStream.Notification
+        has(s, "alarm") -> AudioStream.Alarm
+        has(s, "call", "incall") -> AudioStream.Call
+        else -> AudioStream.Media
+    }
+
     private fun mute(s: String): LocalCommand? = when {
-        Regex("^(phone |mobile )?unmute( phone| mobile)?$").matches(s) -> LocalCommand.Mute(false)
-        Regex("^(phone |mobile )?(mute|silent)( phone| mobile| mode)?( pe| par| on)?$").matches(s) -> LocalCommand.Mute(true)
+        Regex("^mute media$").matches(s) || Regex("^media mute$").matches(s) -> LocalCommand.Mute(on = true, mediaOnly = true)
+        Regex("^unmute media$").matches(s) || Regex("^media unmute$").matches(s) -> LocalCommand.Mute(on = false, mediaOnly = true)
+        Regex("^(phone |mobile )?unmute( phone| mobile)?$").matches(s) -> LocalCommand.Mute(on = false, mediaOnly = false)
+        Regex("^(phone |mobile )?(mute|silent)( phone| mobile| mode)?( pe| par| on)?$").matches(s) -> LocalCommand.Mute(on = true, mediaOnly = false)
         else -> null
     }
 
@@ -150,7 +214,7 @@ object LocalRouter {
     }
 
     private fun battery(s: String): LocalCommand? =
-        if (has(s, "battery", "charge", "charging") && !has(s, "saver", "save", "mode")) LocalCommand.Battery else null
+        if (has(s, "battery", "charge", "charging") && !has(s, "saver", "save", "mode", "settings", "setting")) LocalCommand.Battery else null
 
     private fun time(s: String): LocalCommand? = when {
         Regex("\\btime in \\w+").containsMatchIn(s) -> null // another city: Gemini knows
@@ -192,8 +256,12 @@ object LocalRouter {
         "play", "resume", "play music", "resume music", "music play", "music resume", "music on", "music chalu",
         "music chalao", "gaana chalao", "gana chalao", "gaane chalao", "continue music", "play song",
     )
-    private val MORE = Regex("\\b(and|aur|then|phir|message|msg|call|bhejo|send|search|whatsapp pe|on whatsapp)\\b.*\\b\\w+")
-    private val NOT_APPS = setOf("timer", "alarm", "music", "torch", "flashlight", "song", "gaana")
+    private val MORE = Regex("\\b(and|aur|then|phir|message|msg|call|bhejo|send|whatsapp pe|on whatsapp)\\b.*\\b\\w+")
+    private val NOT_APPS = setOf("timer", "alarm", "music", "torch", "flashlight", "song", "gaana", "notifications", "quick settings", "wifi", "hotspot", "bluetooth", "brightness")
+    private val LIST_APPS = Regex("\\b(list|show|batao|dikhao)\\b.*\\b(installed )?apps\\b|\\b(installed apps list|all apps|a to z apps|apps a to z)\\b")
+    private val SEARCH_APP_INSTALLED = Regex("^do i have (.+?) installed$")
+    private val SEARCH_APP_IS_INSTALLED = Regex("^is (.+?) installed$")
+    private val SEARCH_APP_KAUN = Regex("^kya (.+?) installed hai$")
     private val OPEN_FIRST = Regex("^(open|launch|start|kholo|khol)\\s+(.+)$")
     private val OPEN_LAST = Regex("^(.+?)\\s+(kholo|khol|kholiye|open|chalu|chalao|start|launch)$")
 }

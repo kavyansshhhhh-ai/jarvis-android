@@ -15,6 +15,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -78,6 +80,10 @@ fun SettingsScreen(assistant: AssistantViewModel) {
     val context = LocalContext.current
     val wakeOn by assistant.wakeWord.collectAsStateWithLifecycle()
     val wakeState by assistant.wakeState.collectAsStateWithLifecycle()
+    val profile by assistant.personalProfile.collectAsStateWithLifecycle()
+    val installedApps by assistant.installedApps.collectAsStateWithLifecycle()
+    var showProfileEditor by remember { mutableStateOf(false) }
+    var showAppsBrowser by remember { mutableStateOf(false) }
     var localOn by remember { mutableStateOf(assistant.localCommands) }
     var networkOn by remember { mutableStateOf(assistant.networkSpeech) }
     var engine by remember { mutableStateOf(assistant.speechEngine) }
@@ -92,6 +98,23 @@ fun SettingsScreen(assistant: AssistantViewModel) {
         )
     }
     var micDeniedOnce by remember { mutableStateOf(false) }
+
+    if (showProfileEditor) {
+        PersonalProfileDialog(
+            initial = profile,
+            onSave = assistant::savePersonalProfile,
+            onClear = assistant::clearPersonalProfile,
+            onDismiss = { showProfileEditor = false },
+        )
+    }
+    if (showAppsBrowser) {
+        InstalledAppsDialog(
+            apps = installedApps,
+            onRefresh = assistant::refreshInstalledApps,
+            onLaunch = assistant::launchInstalledApp,
+            onDismiss = { showAppsBrowser = false },
+        )
+    }
 
     val askWakePermissions = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -211,6 +234,25 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                     text = if (wakeOn && micGranted) "Active" else "Standby",
                     color = if (wakeOn && micGranted) ElectricCyan else SlateMuted,
                 )
+            }
+        }
+
+        Section("Personal Profile") {
+            val songSummary = if (profile.favoriteSongs.isEmpty()) "No favourite songs saved" else profile.favoriteSongs.joinToString(", ")
+            val musicAppText = profile.preferredMusicApp.ifBlank { "Default (YouTube Music / Spotify)" }
+            val identityLine = listOfNotNull(
+                profile.preferredName.takeIf { it.isNotBlank() },
+                profile.addressAs.takeIf { it.isNotBlank() }?.let { "call you \"$it\"" },
+            ).joinToString(" • ").ifEmpty { "Set preferred name, music taste, and response style" }
+            InfoRow(
+                "Your preferences",
+                "$identityLine\nSongs: $songSummary • Music app: $musicAppText",
+                icon = Icons.Filled.Star,
+                iconTint = ElectricCyan,
+            ) {
+                TextButton(onClick = { showProfileEditor = true }) {
+                    Text(if (profile.isEmpty) "Set up" else "Edit", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
+                }
             }
         }
 
@@ -472,7 +514,26 @@ fun SettingsScreen(assistant: AssistantViewModel) {
             }
         }
 
-        Section("Permissions & Safety") {
+        Section("Installed Apps Discovery") {
+            val launchCount = installedApps.count { it.launchable }
+            InfoRow(
+                "All installed apps (A–Z)",
+                "$launchCount launchable apps indexed (${installedApps.size} total including system components). Refreshes automatically when apps are installed or removed.",
+                icon = Icons.Filled.Build,
+                iconTint = ElectricCyan,
+            ) {
+                TextButton(
+                    onClick = {
+                        assistant.refreshInstalledApps()
+                        showAppsBrowser = true
+                    },
+                ) {
+                    Text("Browse A–Z", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+
+        Section("Permissions & Phone Control") {
             ControlCard(Modifier.padding(vertical = 6.dp), showWhenOn = true)
             GlassDivider()
             InfoRow(
@@ -483,6 +544,16 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                     Text("Open", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
                 }
             }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                "PERMISSION CENTER",
+                style = MaterialTheme.typography.labelMedium,
+                color = SlateMuted,
+                modifier = Modifier.padding(start = 6.dp),
+            )
+            PermissionCenterPanel()
         }
 
         Section("Privacy Boundaries") {
@@ -548,6 +619,7 @@ private fun engineText(engine: String?) = when (engine) {
 private fun formatSeconds(ms: Long): String =
     String.format(java.util.Locale.US, "%.1fs", ms / 1000f)
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun <T> OptionChoiceRow(
     title: String,
@@ -564,9 +636,10 @@ private fun <T> OptionChoiceRow(
     ) {
         Text(title, style = MaterialTheme.typography.titleMedium, color = PureWhite)
         Text(detail, style = MaterialTheme.typography.bodySmall, color = Muted)
-        Row(
-            Modifier.fillMaxWidth(),
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             options.forEach { (value, label) ->
                 val isSelected = value == selected
@@ -574,7 +647,6 @@ private fun <T> OptionChoiceRow(
                 val interaction = remember { MutableInteractionSource() }
                 Row(
                     modifier = Modifier
-                        .weight(1f)
                         .glassPressScale(interaction)
                         .clip(shape)
                         .background(
@@ -593,7 +665,7 @@ private fun <T> OptionChoiceRow(
                             interactionSource = interaction,
                             indication = null,
                         ) { onSelect(value) }
-                        .padding(horizontal = 8.dp, vertical = 9.dp),
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {

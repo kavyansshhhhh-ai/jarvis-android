@@ -100,4 +100,21 @@ class LocalRouterTest {
     fun triesEveryAlternative() {
         assertEquals(OpenApp("youtube"), LocalRouter.match(listOf("you tube call", "youtube kholo")))
     }
+
+    @Test
+    fun streamVolumesSystemPanelsAndInstalledAppsQueries() {
+        assertEquals(Mute(true, mediaOnly = true), LocalRouter.match("mute media"))
+        assertEquals(Mute(false, mediaOnly = true), LocalRouter.match("unmute media"))
+        assertEquals(SetVolume(50, app.shilex.android.audio.AudioStream.Ring), LocalRouter.match("ringtone volume 50 percent"))
+        assertEquals(SetVolume(80, app.shilex.android.audio.AudioStream.Alarm), LocalRouter.match("alarm volume 80"))
+        assertEquals(LocalCommand.SystemPanel(SystemPanelTarget.Notifications), LocalRouter.match("notification panel kholo"))
+        assertEquals(LocalCommand.SystemPanel(SystemPanelTarget.QuickSettings), LocalRouter.match("quick settings kholo"))
+        assertEquals(LocalCommand.SystemPanel(SystemPanelTarget.Wifi), LocalRouter.match("wi-fi settings kholo"))
+        assertEquals(LocalCommand.SystemPanel(SystemPanelTarget.Hotspot), LocalRouter.match("hotspot settings kholo"))
+        assertEquals(LocalCommand.SystemPanel(SystemPanelTarget.Bluetooth), LocalRouter.match("bluetooth settings kholo"))
+        assertEquals(LocalCommand.SystemPanel(SystemPanelTarget.Brightness), LocalRouter.match("brightness settings kholo"))
+        assertEquals(LocalCommand.SystemPanel(SystemPanelTarget.Battery), LocalRouter.match("battery settings kholo"))
+        assertEquals(LocalCommand.ListApps, LocalRouter.match("list all installed apps"))
+        assertEquals(LocalCommand.SearchApps("spotify"), LocalRouter.match("do I have Spotify installed"))
+    }
 }

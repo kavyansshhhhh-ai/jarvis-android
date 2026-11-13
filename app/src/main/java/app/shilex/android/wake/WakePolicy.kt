@@ -13,8 +13,8 @@ enum class WakeState {
 }
 
 /**
- * Pure policy decisions for wake-word activation, cooldowns, lock-screen safety,
- * phone-call conflicts, and microphone busy backoff. Unit-tested without Android.
+ * Pure policy decisions for wake-word activation, cooldowns, duplicate session suppression,
+ * assistant TTS echo suppression, lock-screen safety, phone-call conflicts, and mic backoff.
  */
 object WakePolicy {
     const val COOLDOWN_MS = 2_500L
@@ -24,6 +24,8 @@ object WakePolicy {
 
     enum class Decision {
         Activate,
+        SessionAlreadyActive,
+        AssistantSpeaking,
         Cooldown,
         Locked,
         NoMicPermission,
@@ -34,8 +36,12 @@ object WakePolicy {
         lastWakeMs: Long,
         keyguardLocked: Boolean,
         hasMicPermission: Boolean,
+        sessionActive: Boolean = false,
+        assistantSpeaking: Boolean = false,
     ): Decision = when {
         !hasMicPermission -> Decision.NoMicPermission
+        sessionActive -> Decision.SessionAlreadyActive
+        assistantSpeaking -> Decision.AssistantSpeaking
         keyguardLocked -> Decision.Locked
         lastWakeMs > 0L && nowMs - lastWakeMs < COOLDOWN_MS -> Decision.Cooldown
         else -> Decision.Activate
@@ -51,7 +57,6 @@ object WakePolicy {
     fun isCallAudioMode(mode: Int): Boolean =
         mode == AUDIO_MODE_RINGTONE || mode == AUDIO_MODE_IN_CALL || mode == AUDIO_MODE_IN_COMMUNICATION
 
-    // Mirrors AudioManager constants so unit tests run purely on JVM.
     private const val AUDIO_MODE_RINGTONE = 1
     private const val AUDIO_MODE_IN_CALL = 2
     private const val AUDIO_MODE_IN_COMMUNICATION = 3

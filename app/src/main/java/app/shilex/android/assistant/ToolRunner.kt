@@ -20,12 +20,14 @@ import app.shilex.android.local.MediaKey
 import app.shilex.android.learn.Habits
 import app.shilex.android.data.Settings as AppSettings
 import app.shilex.android.R
+import app.shilex.android.audio.AudioStream
 import app.shilex.android.control.ControlRules
 import app.shilex.android.control.ControlService
 import app.shilex.android.live.FunctionCall
 import app.shilex.android.live.FunctionResult
 import app.shilex.android.tools.AppTools
 import app.shilex.android.tools.BookingTools
+import app.shilex.android.tools.BrowserLaunchGuard
 import app.shilex.android.tools.CalendarTools
 import app.shilex.android.tools.ClockTools
 import app.shilex.android.tools.CommsTools
@@ -71,6 +73,7 @@ class ToolRunner(
     private val onScreen: () -> Boolean,
     private val note: (String) -> Unit,
     private val endSoon: () -> Unit,
+    private val onPhotoPick: (String) -> Unit = {},
 ) : ToolHost {
     private val tools = (
         CommsTools.all() + ClockTools.all() + ReminderTools.all() + MediaTools.all() + InfoTools.all() +
@@ -83,6 +86,7 @@ class ToolRunner(
     private class Pending(val intent: Intent, val label: String, val then: (suspend () -> String?)?)
 
     @Volatile private var pending: Pending? = null
+    @Volatile private var lastUserText: String = ""
 
     fun declarations(): JSONArray = JSONArray().apply {
         tools.values.filter { Capabilities.of(it.name) != null }.forEach { put(it.declaration()) }
@@ -108,6 +112,12 @@ class ToolRunner(
                         "not_allowed",
                         "Screen text was read this turn, so this needed the user's Allow tap and it wasn't given. " +
                             "Ask the user in your own words whether they want it; do it only if they say so.",
+                    )
+                } else if (call.name == "open_web_search" && !BrowserLaunchGuard.isExplicitBrowserRequest(lastUserText)) {
+                    Diag.i("tool: blocked open_web_search because user didn't ask to open Chrome/browser")
+                    Results.failed(
+                        "internal_answer_only",
+                        "The user did not ask to open Chrome or a browser. Answer directly in voice inside ${Branding.ASSISTANT_NAME}, or use web_search_internal instead.",
                     )
                 } else if (
                     call.name == "open_app" &&
@@ -154,6 +164,7 @@ class ToolRunner(
 
     /** The user spoke or typed: their words lead again ([TurnTrust]) and may answer a reply read-back. */
     fun userSpoke(text: String = "") {
+        if (text.isNotBlank()) lastUserText = text
         trust.userSpoke()
         Replies.heard(text)
     }
@@ -193,7 +204,11 @@ class ToolRunner(
     private fun learnFrom(call: FunctionCall) {
         if (!AppSettings(context).learning) return
         val command = when (call.name) {
-            "device_control" -> DeviceTools.command(call.args.optString("action"), call.args.optInt("percent", -1))
+            "device_control" -> DeviceTools.command(
+                call.args.optString("action"),
+                call.args.optInt("percent", -1),
+                AudioStream.fromKey(call.args.optString("stream")),
+            )
             "open_app" -> call.args.optString("name").trim().lowercase().takeIf { it.isNotEmpty() }?.let { LocalCommand.OpenApp(it) }
             "media_control" -> MediaKey.entries.firstOrNull { it.name.equals(call.args.optString("action"), ignoreCase = true) }?.let { LocalCommand.Media(it) }
             else -> null
@@ -205,8 +220,14 @@ class ToolRunner(
 
     fun reset() {
         pending = null
+        lastUserText = ""
         cancelled.clear()
         trust.userSpoke()
+    }
+
+    override fun requestPhotoPick(question: String) {
+        onPhotoPick(question)
+        if (!onScreen()) start(Intent(context, MainActivity::class.java))
     }
 
     override fun openApp(intent: Intent, label: String, done: String, then: (suspend () -> String?)?): JSONObject {

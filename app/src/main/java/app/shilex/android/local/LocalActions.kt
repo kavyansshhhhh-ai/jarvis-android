@@ -1,40 +1,41 @@
 package app.shilex.android.local
 
+import android.accessibilityservice.AccessibilityService
+import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
+import android.net.wifi.WifiManager
 import android.os.BatteryManager
+import android.os.Build
 import android.provider.AlarmClock
 import android.provider.Settings
 import android.view.KeyEvent
 import app.shilex.android.Diag
+import app.shilex.android.audio.AudioStream
+import app.shilex.android.audio.VolumeController
 import app.shilex.android.control.ControlService
-import app.shilex.android.tools.AppMatch
-import app.shilex.android.tools.InstalledApp
+import app.shilex.android.tools.AppCatalog
+import app.shilex.android.tools.InstalledAppsRegistry
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import kotlin.math.roundToInt
 
 /** What a local command did: a short reply, or "let Gemini handle it" ([handOff]). */
 data class LocalResult(val reply: String, val handOff: Boolean = false)
 
-/** Carries out [LocalCommand]s on the phone. No network, no Gemini. */
+/** Carries out [LocalCommand]s on the phone using real system APIs and verified readback. */
 class LocalActions(private val context: Context) {
     private val audio = context.getSystemService(AudioManager::class.java)
+    private val volume = VolumeController(context)
 
     fun run(command: LocalCommand): LocalResult = when (command) {
-        is LocalCommand.SetVolume -> setVolume(command.percent)
-        is LocalCommand.StepVolume -> {
-            val direction = if (command.up) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
-            repeat(2) { audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, 0) }
-            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_SAME, AudioManager.FLAG_SHOW_UI)
-            LocalResult("Volume ${volumePercent()} percent.")
-        }
-        is LocalCommand.Mute -> mute(command.on)
+        is LocalCommand.SetVolume -> setVolume(command.stream, command.percent)
+        is LocalCommand.StepVolume -> stepVolume(command.stream, command.up)
+        is LocalCommand.Mute -> mute(command.on, command.mediaOnly)
         is LocalCommand.Media -> media(command.key)
         is LocalCommand.Torch -> torch(command.on)
         LocalCommand.Battery -> battery()
@@ -46,30 +47,28 @@ class LocalActions(private val context: Context) {
         )
         is LocalCommand.Alarm -> alarm(command)
         is LocalCommand.OpenApp -> openApp(command.name)
+        is LocalCommand.SystemPanel -> openSystemPanel(command.target)
+        LocalCommand.ListApps -> {
+            val apps = InstalledAppsRegistry.apps(context, forceRefresh = true)
+            LocalResult(AppCatalog.summarizeAlphabetical(apps, limit = 15, includeSystem = false))
+        }
+        is LocalCommand.SearchApps -> searchApps(command.query)
         LocalCommand.Stop -> LocalResult("Okay.")
     }
 
-    private fun setVolume(percent: Int): LocalResult {
-        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        audio.setStreamVolume(AudioManager.STREAM_MUSIC, (percent * max / 100f).roundToInt(), AudioManager.FLAG_SHOW_UI)
-        return LocalResult("Volume ${volumePercent()} percent.")
+    private fun setVolume(stream: AudioStream, percent: Int): LocalResult {
+        val outcome = volume.setPercent(requestedPercent = percent, stream = stream, showUi = true)
+        return LocalResult(outcome.message)
     }
 
-    private fun volumePercent(): Int =
-        audio.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+    private fun stepVolume(stream: AudioStream, up: Boolean): LocalResult {
+        val outcome = volume.step(up = up, stream = stream, showUi = true)
+        return LocalResult(outcome.message)
+    }
 
-    /** Media muted, and calls set to vibrate (silent needs Do Not Disturb access). */
-    private fun mute(on: Boolean): LocalResult {
-        val direction = if (on) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE
-        audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, 0)
-        val ringer = runCatching {
-            audio.ringerMode = if (on) AudioManager.RINGER_MODE_VIBRATE else AudioManager.RINGER_MODE_NORMAL
-        }.isSuccess
-        return when {
-            on && ringer -> LocalResult("Muted. Calls will vibrate.")
-            on -> LocalResult("Media muted.")
-            else -> LocalResult("Sound is back on.")
-        }
+    private fun mute(on: Boolean, mediaOnly: Boolean): LocalResult {
+        val outcome = volume.setMute(on = on, mediaOnly = mediaOnly)
+        return LocalResult(outcome.message)
     }
 
     private fun media(key: MediaKey): LocalResult {
@@ -119,16 +118,101 @@ class LocalActions(private val context: Context) {
 
     private fun openApp(name: String): LocalResult {
         val pm = context.packageManager
-        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val apps = pm.queryIntentActivities(launcher, 0).map { InstalledApp(it.loadLabel(pm).toString(), it.activityInfo.packageName) }
-        val matches = AppMatch.find(name, apps)
-        // Several matches need a question, and opening from the background needs phone control.
+        val apps = InstalledAppsRegistry.apps(context, forceRefresh = true)
+        val matches = AppCatalog.find(name, apps, includeNonLaunchable = false)
         if (matches.size != 1 || !canOpenApps()) {
-            return if (matches.isEmpty()) LocalResult("I couldn't find an app called $name.") else LocalResult("", handOff = true)
+            return if (matches.isEmpty()) LocalResult("I couldn't find an installed app called $name.") else LocalResult("", handOff = true)
         }
         val app = matches.single()
         val intent = pm.getLaunchIntentForPackage(app.packageName) ?: return LocalResult("${app.label} can't be opened from outside.")
         return if (start(intent)) LocalResult("") else LocalResult("${app.label} didn't open.")
+    }
+
+    private fun searchApps(query: String): LocalResult {
+        val apps = InstalledAppsRegistry.apps(context, forceRefresh = true)
+        val hits = AppCatalog.search(query, apps, includeNonLaunchable = true)
+        return if (hits.isEmpty()) {
+            LocalResult("No, \"$query\" doesn't appear to be installed on this phone.")
+        } else {
+            val names = hits.take(4).joinToString(", ") { it.label }
+            LocalResult("Yes, found: $names.")
+        }
+    }
+
+    private fun openSystemPanel(target: SystemPanelTarget): LocalResult {
+        val control = ControlService.instance
+        return when (target) {
+            SystemPanelTarget.Notifications -> {
+                if (control != null && control.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)) {
+                    LocalResult("Opened the notification panel.")
+                } else {
+                    LocalResult("Turn on Phone control in Settings so JARVIS can pull down the notification panel.", handOff = true)
+                }
+            }
+            SystemPanelTarget.QuickSettings -> {
+                if (control != null && control.performGlobalAction(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS)) {
+                    LocalResult("Opened Quick Settings.")
+                } else {
+                    LocalResult("Turn on Phone control in Settings so JARVIS can open Quick Settings.", handOff = true)
+                }
+            }
+            SystemPanelTarget.Wifi -> {
+                val wifiEnabled = runCatching { context.applicationContext.getSystemService(WifiManager::class.java)?.isWifiEnabled }.getOrNull()
+                val stateText = when (wifiEnabled) {
+                    true -> "Wi-Fi is currently on."
+                    false -> "Wi-Fi is currently off."
+                    null -> ""
+                }
+                val panelIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    Intent(Settings.Panel.ACTION_WIFI)
+                } else {
+                    Intent(Settings.ACTION_WIFI_SETTINGS)
+                }
+                val opened = start(panelIntent) || start(Intent(Settings.ACTION_WIFI_SETTINGS))
+                if (opened) LocalResult("Opened Wi-Fi settings. $stateText".trim())
+                else LocalResult("Couldn't open Wi-Fi settings right now. $stateText".trim(), handOff = true)
+            }
+            SystemPanelTarget.Hotspot -> {
+                val tetheringIntent = Intent().setClassName("com.android.settings", "com.android.settings.TetherSettings")
+                val opened = start(tetheringIntent) || start(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+                if (opened) {
+                    LocalResult("Opened Hotspot and tethering settings so you can toggle it directly; Android doesn't allow apps to switch Hotspot silently.")
+                } else {
+                    LocalResult("Couldn't open Hotspot settings directly; open Wireless settings in Android Settings.", handOff = true)
+                }
+            }
+            SystemPanelTarget.Bluetooth -> {
+                val btEnabled = runCatching { context.getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled }.getOrNull()
+                val stateText = when (btEnabled) {
+                    true -> "Bluetooth is currently on."
+                    false -> "Bluetooth is currently off."
+                    null -> ""
+                }
+                if (start(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))) {
+                    LocalResult("Opened Bluetooth settings. $stateText".trim())
+                } else {
+                    LocalResult("Couldn't open Bluetooth settings. $stateText".trim(), handOff = true)
+                }
+            }
+            SystemPanelTarget.Brightness -> {
+                if (start(Intent(Settings.ACTION_DISPLAY_SETTINGS))) {
+                    LocalResult("Opened Display & Brightness settings.")
+                } else {
+                    LocalResult("Couldn't open Display settings.", handOff = true)
+                }
+            }
+            SystemPanelTarget.Battery -> {
+                val level = runCatching {
+                    context.getSystemService(BatteryManager::class.java)?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                }.getOrNull()
+                val levelNote = level?.let { "Battery is at $it percent." }.orEmpty()
+                if (start(Intent(Intent.ACTION_POWER_USAGE_SUMMARY)) || start(Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS))) {
+                    LocalResult("Opened Battery settings. $levelNote".trim())
+                } else {
+                    LocalResult("Couldn't open Battery settings. $levelNote".trim(), handOff = true)
+                }
+            }
+        }
     }
 
     // Android lets apps with a running Accessibility service open other apps from the background.

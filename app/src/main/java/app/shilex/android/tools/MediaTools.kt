@@ -10,10 +10,12 @@ import android.view.KeyEvent
 import app.shilex.android.Branding
 import app.shilex.android.Diag
 import app.shilex.android.control.ControlService
+import app.shilex.android.data.PersonalProfileResolver
+import app.shilex.android.data.PersonalProfileStore
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 
-/** Play a named song in a music app, and pause / skip whatever is playing. */
+/** Play a named song (or saved favourite song) in a music app, and pause / skip whatever is playing. */
 object MediaTools {
     fun all(): List<PhoneTool> = listOf(PlaySong, MediaControl)
 
@@ -27,36 +29,52 @@ object MediaTools {
 
         override fun declaration() = Schema.function(
             name,
-            "Opens a music app on a song, artist, album or playlist. Free accounts only show the results, " +
-                "so the user taps Play.",
-            Schema.string("query", "What to play, e.g. \"Kesariya Arijit Singh\".", required = true),
-            Schema.string("app", "Music app, if the user named one.", choices = APPS.keys.toList()),
+            "Opens a music app on a song, artist, album or playlist. Automatically resolves \"my favourite song\" using the user's saved Personal Profile. Free accounts only show results so the user taps Play unless Phone control is on.",
+            Schema.string("query", "What to play, e.g. \"Kesariya Arijit Singh\" or \"my favourite song\"."),
+            Schema.string("app", "Music app, if the user named one (uses saved preferred music app if empty).", choices = APPS.keys.toList()),
         )
 
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
-            val query = args.text("query")
-            if (query.isEmpty()) return Results.failed("no_query", "Ask what to play.")
-            val app = APPS[args.text("app")] ?: APPS.getValue("youtube_music")
+            val profile = PersonalProfileStore(host.context).load()
+            val rawQuery = args.text("query")
+            val query = PersonalProfileResolver.resolveMusicQuery(rawQuery, profile)
+            if (query.isNullOrBlank()) {
+                return Results.failed(
+                    "missing_favorite_song",
+                    "No favourite song is saved in Personal Profile yet. Ask which song they would like to play or add to their profile.",
+                )
+            }
+            val appKey = PersonalProfileResolver.resolveMusicAppKey(args.text("app"), profile)
+                .ifEmpty { "youtube_music" }
+            val app = APPS[appKey] ?: APPS.getValue("youtube_music")
             val play = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
                 .putExtra(SearchManager.QUERY, query)
                 .setPackage(app)
-            // Without the app installed, a YouTube Music search in the browser still works.
-            val intent = if (play.resolveActivity(host.context.packageManager) != null) {
+            val hasApp = play.resolveActivity(host.context.packageManager) != null
+            if (!hasApp && appKey == "spotify") {
+                return Results.failed(
+                    "app_not_installed",
+                    "Spotify isn't installed on this phone. Ask if they want to play \"$query\" on YouTube Music instead.",
+                )
+            }
+            // Without YouTube Music installed, a YouTube Music search in the browser still works.
+            val intent = if (hasApp) {
                 play
             } else {
                 Intent(Intent.ACTION_VIEW, Uri.parse("https://music.youtube.com/search?q=${Uri.encode(query)}"))
             }
+            val appLabel = if (appKey == "spotify") "Spotify" else "YouTube Music"
             if (intent !== play || ControlService.instance == null) {
                 return host.openApp(
                     intent,
-                    "music",
-                    "The music app will open on \"$query\" after you speak; the user taps Play on the top result.",
+                    appLabel,
+                    "$appLabel will open on \"$query\" after you speak; the user taps Play on the top result.",
                 )
             }
             return host.openApp(
                 intent,
-                "music",
-                "The music app will open on \"$query\" after you speak and ${Branding.ASSISTANT_NAME} will press Play on the top result.",
+                appLabel,
+                "$appLabel will open on \"$query\" after you speak and ${Branding.ASSISTANT_NAME} will press Play on the top result.",
             ) { pressPlay(app, host) }
         }
 

@@ -26,6 +26,7 @@ import app.shilex.android.Branding
 import app.shilex.android.Diag
 import app.shilex.android.MainActivity
 import app.shilex.android.R
+import app.shilex.android.audio.AudioPlaybackState
 import app.shilex.android.data.Settings
 import app.shilex.android.local.LocalTurn
 import app.shilex.android.orb.WakeActivationOverlay
@@ -110,10 +111,15 @@ class VoiceService : Service() {
         if (wakeWordWanted(this)) {
             show(wakeNotification())
             _wakeState.value = WakeState.Starting
-            // Let the session's mic close before the wake listener opens its own.
+            val resumeDelay = if (AudioPlaybackState.isSpeakingOrTail()) AudioPlaybackState.TTS_ECHO_TAIL_MS else MIC_HANDOVER_MS
+            // Let the session's mic & any TTS echo tail settle before the wake listener reopens.
             main.postDelayed(
                 {
-                    if (!VoiceSession.get(this).active && !LocalTurn.get(this).active && !setupActive && wakeWordWanted(this)) {
+                    if (!VoiceSession.get(this).active &&
+                        !LocalTurn.get(this).active &&
+                        !setupActive &&
+                        wakeWordWanted(this)
+                    ) {
                         if (!wake.start()) {
                             Diag.w("wake: couldn't start")
                             syncState(this)
@@ -121,7 +127,7 @@ class VoiceService : Service() {
                     }
                 },
                 RESUME_WAKE_TOKEN,
-                MIC_HANDOVER_MS,
+                resumeDelay,
             )
             return
         }
@@ -135,7 +141,18 @@ class VoiceService : Service() {
         val keyguard = getSystemService(KeyguardManager::class.java)
         val hasMic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val now = SystemClock.elapsedRealtime()
-        when (WakePolicy.evaluateActivation(now, lastWakeAt, keyguard.isKeyguardLocked, hasMic)) {
+        val sessionRunning = VoiceSession.get(this).active || LocalTurn.get(this).active || setupActive
+        val speaking = AudioPlaybackState.isSpeakingOrTail(now)
+        when (
+            WakePolicy.evaluateActivation(
+                nowMs = now,
+                lastWakeMs = lastWakeAt,
+                keyguardLocked = keyguard.isKeyguardLocked,
+                hasMicPermission = hasMic,
+                sessionActive = sessionRunning,
+                assistantSpeaking = speaking,
+            )
+        ) {
             WakePolicy.Decision.NoMicPermission -> {
                 Diag.w("wake: mic permission missing, pausing")
                 update()
@@ -143,6 +160,16 @@ class VoiceService : Service() {
             }
             WakePolicy.Decision.Locked -> {
                 Diag.i("wake: phone locked, ignored")
+                update()
+                return
+            }
+            WakePolicy.Decision.SessionAlreadyActive -> {
+                Diag.i("wake: ignored (session already active)")
+                update()
+                return
+            }
+            WakePolicy.Decision.AssistantSpeaking -> {
+                Diag.i("wake: ignored (assistant speaking)")
                 update()
                 return
             }
@@ -160,7 +187,17 @@ class VoiceService : Service() {
         acquireHandoverWakeLock()
         val interactive = runCatching { getSystemService(PowerManager::class.java)?.isInteractive == true }.getOrDefault(true)
         val settings = Settings(this)
-        if (WakeIndicator.onWakeDetected(now, settings.wakeIndicator, keyguard.isKeyguardLocked, interactive, settings.wakeDotDurationMs)) {
+        if (
+            WakeIndicator.onWakeDetected(
+                nowMs = now,
+                enabled = settings.wakeIndicator,
+                keyguardLocked = keyguard.isKeyguardLocked,
+                screenInteractive = interactive,
+                durationMs = settings.wakeDotDurationMs,
+                sessionActive = sessionRunning,
+                assistantSpeaking = speaking,
+            )
+        ) {
             WakeActivationOverlay.showBriefly(this)
         }
         runCatching { ToneGenerator(AudioManager.STREAM_SYSTEM, 70).startTone(ToneGenerator.TONE_PROP_BEEP, 130) }
