@@ -2,6 +2,8 @@ package app.shilex.android.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import app.shilex.android.wake.WakeDotSize
+import app.shilex.android.wake.WakeIndicatorController
 
 /** Plain preferences (no secrets). Defaults match the desktop app. */
 class Settings(context: Context) {
@@ -40,10 +42,22 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("wake_word", false)
         set(value) = prefs.edit().putBoolean("wake_word", value).apply()
 
-    /** Tiny top-center activation dot when the wake phrase triggers. */
+    /** Subtle top-center activation dot when the wake phrase triggers. */
     var wakeIndicator: Boolean
         get() = prefs.getBoolean("wake_indicator", true)
         set(value) = prefs.edit().putBoolean("wake_indicator", value).apply()
+
+    /** Visible size preset for the wake dot ("small", "standard", "large"). Default: standard (~12dp). */
+    var wakeDotSize: String
+        get() = WakeDotSize.fromKey(prefs.getString("wake_dot_size", WakeDotSize.Standard.key)).key
+        set(value) = prefs.edit().putString("wake_dot_size", WakeDotSize.fromKey(value).key).apply()
+
+    /** How long the wake dot stays visible (ms), clamped to safe bounds. Default: 2800ms (~2.8s). */
+    var wakeDotDurationMs: Long
+        get() = WakeIndicatorController.clampDurationMs(
+            prefs.getLong("wake_dot_duration_ms", WakeIndicatorController.DISPLAY_DURATION_MS),
+        )
+        set(value) = prefs.edit().putLong("wake_dot_duration_ms", WakeIndicatorController.clampDurationMs(value)).apply()
 
     /** After the wake word, simple commands run on the phone (no Gemini) when it can hear them. */
     var localCommands: Boolean

@@ -8,12 +8,24 @@ import org.junit.Test
 class WakeIndicatorTest {
 
     @Test
-    fun triggersOnlyOnRealWakeAndFadesOutInOneToTwoSeconds() {
+    fun defaultSizeAndDurationMatchVisibleSubtleRequirements() {
+        assertEquals(WakeDotSize.Standard, WakeDotSize.fromKey(null))
+        assertEquals(WakeDotSize.Standard, WakeDotSize.fromKey("unknown"))
+        assertEquals(12, WakeDotSize.Standard.coreDiameterDp)
+        assertEquals(22, WakeDotSize.Standard.glowDiameterDp)
+        assertTrue(WakeIndicatorController.DISPLAY_DURATION_MS in 2_500L..3_000L)
+        assertEquals(2_000L, WakeIndicatorController.clampDurationMs(500L))
+        assertEquals(4_000L, WakeIndicatorController.clampDurationMs(10_000L))
+        assertTrue(WakeIndicatorController.cleanupDelayMs(2_800L) > 2_800L)
+    }
+
+    @Test
+    fun triggersOnlyOnRealWakeAndRespectsConfiguredDuration() {
         val controller = WakeIndicatorController()
         assertFalse(controller.state.value.visible)
         assertEquals(0L, controller.state.value.triggerId)
 
-        // Real wake triggers visibility and increments triggerId
+        // Real wake triggers visibility with configured duration (~2.8s default) and increments triggerId
         assertTrue(
             controller.onWakeDetected(
                 nowMs = 10_000L,
@@ -24,13 +36,29 @@ class WakeIndicatorTest {
         )
         assertTrue(controller.state.value.visible)
         assertEquals(1L, controller.state.value.triggerId)
+        assertEquals(WakeIndicatorController.DISPLAY_DURATION_MS, controller.state.value.durationMs)
 
-        // Remains visible before 1.5s expiry window
-        assertFalse(controller.expireIfElapsed(10_800L))
+        // Remains visible before configured 2.8s expiry window
+        assertFalse(controller.expireIfElapsed(12_000L))
         assertTrue(controller.state.value.visible)
 
-        // Automatically hides after ~1.5s (1-2s window)
+        // Automatically hides once 2.8s window elapses
         assertTrue(controller.expireIfElapsed(10_000L + WakeIndicatorController.DISPLAY_DURATION_MS))
+        assertFalse(controller.state.value.visible)
+
+        // Supports custom duration from settings (clamped cleanly)
+        assertTrue(
+            controller.onWakeDetected(
+                nowMs = 20_000L,
+                enabled = true,
+                keyguardLocked = false,
+                screenInteractive = true,
+                durationMs = 3_500L,
+            ),
+        )
+        assertFalse(controller.expireIfElapsed(23_000L))
+        assertTrue(controller.state.value.visible)
+        assertTrue(controller.expireIfElapsed(23_500L))
         assertFalse(controller.state.value.visible)
     }
 
@@ -56,7 +84,7 @@ class WakeIndicatorTest {
     }
 
     @Test
-    fun systemOverlayRespectsPermissionLockAndSensitiveScreens() {
+    fun systemOverlayRespectsPermissionLockBankingUpiAndSensitiveScreens() {
         // Allowed on Home screen & ordinary apps when overlay permission is granted
         assertTrue(
             WakeIndicatorController.shouldShowSystemOverlay(
@@ -94,9 +122,12 @@ class WakeIndicatorTest {
             ),
         )
 
-        // Suppressed on banking apps, password managers, settings, NPCI PIN UI, and sensitive auth screens
+        // Suppressed on banking apps, UPI apps, password managers, settings, NPCI PIN UI, and JARVIS itself
         listOf(
             "com.sbi.lotusintouch",
+            "com.snapwork.hdfc",
+            "com.phonepe.app",
+            "com.google.android.apps.nbu.paisa.user",
             "com.x8bit.bitwarden",
             "org.npci.upi.security.pinactivitycomponent",
             "com.android.settings",

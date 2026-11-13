@@ -8,7 +8,7 @@ import org.junit.Test
 
 class ControlRulesTest {
     @Test
-    fun supportedUpiAppsAllowedWhileBanksPasswordsAndSystemRemainBlocked() {
+    fun financeAppsAreLimitedWhilePasswordVaultsNpciAndSystemRemainBlocked() {
         listOf(
             "com.phonepe.app",
             "net.one97.paytm",
@@ -18,27 +18,50 @@ class ControlRulesTest {
             "com.mobikwik_new",
         ).forEach {
             assertTrue(it, ControlRules.isSupportedUpiApp(it))
+            assertTrue(it, ControlRules.isFinanceApp(it))
             assertFalse(it, ControlRules.blocked(it))
+            assertTrue(it, ControlRules.isSensitiveOrBlockedPackage(it))
+        }
+        listOf(
+            "com.sbi.lotusintouch",
+            "com.snapwork.hdfc",
+            "com.csam.icici.bank.imobile",
+            "com.axis.mobile",
+            "com.msf.kbank.mobile",
+            "com.example.mybank",
+            "com.unknown.upiwallet",
+        ).forEach {
+            assertEquals(it, ControlRules.AppAccess.LimitedFinance, ControlRules.appAccess(it))
+            assertTrue(it, ControlRules.isFinanceApp(it))
+            assertFalse(it, ControlRules.blocked(it))
+            assertTrue(it, ControlRules.isSensitiveOrBlockedPackage(it))
         }
         listOf(
             "com.x8bit.bitwarden",
+            "com.onepassword.android",
             "com.google.android.apps.authenticator2",
-            "com.example.mybank",
-            "com.sbi.lotusintouch",
-            "com.snapwork.hdfc",
             "org.npci.upi.security.pinactivitycomponent",
-            "com.unknown.upiwallet",
             "app.shilex.android",
             "com.android.settings",
             "com.android.vending",
-        ).forEach { assertTrue(it, ControlRules.blocked(it)) }
+        ).forEach {
+            assertEquals(it, ControlRules.AppAccess.Blocked, ControlRules.appAccess(it))
+            assertTrue(it, ControlRules.blocked(it))
+            assertTrue(it, ControlRules.isSensitiveOrBlockedPackage(it))
+        }
         listOf("com.whatsapp", "com.google.android.apps.youtube.music", "com.instagram.android")
-            .forEach { assertFalse(it, ControlRules.blocked(it)) }
+            .forEach {
+                assertEquals(it, ControlRules.AppAccess.Allowed, ControlRules.appAccess(it))
+                assertFalse(it, ControlRules.blocked(it))
+                assertFalse(it, ControlRules.isSensitiveOrBlockedPackage(it))
+            }
     }
 
     @Test
     fun riskyTapsAndUpiStagesAreRecognised() {
         val gpay = "com.google.android.apps.nbu.paisa.user"
+        val phonepe = "com.phonepe.app"
+        val hdfc = "com.snapwork.hdfc"
         assertEquals(Risk.Outgoing, ControlRules.clickRisk("Send", ""))
         assertEquals(Risk.Outgoing, ControlRules.clickRisk("", "com.whatsapp:id/send"))
         assertEquals(Risk.Outgoing, ControlRules.clickRisk("भेजें", ""))
@@ -49,11 +72,18 @@ class ControlRulesTest {
         assertEquals(Risk.Money, ControlRules.clickRisk("Pay Now", ""))
         assertEquals(Risk.Money, ControlRules.clickRisk("Pay ₹500", "", gpay))
         assertEquals(Risk.Money, ControlRules.clickRisk("Proceed to pay ₹250", "", gpay))
+        assertEquals(Risk.Money, ControlRules.clickRisk("Send ₹500", "", phonepe))
+        assertEquals(Risk.Money, ControlRules.clickRisk("Transfer ₹1,000", "", hdfc))
+        assertEquals(Risk.Money, ControlRules.clickRisk("Confirm & Pay", "", phonepe))
+        assertEquals(Risk.Money, ControlRules.clickRisk("Pay", "", gpay))
         assertEquals(Risk.Outgoing, ControlRules.clickRisk("Proceed", "", gpay))
-        assertEquals(Risk.Outgoing, ControlRules.clickRisk("Confirm", "", gpay))
+        assertEquals(Risk.Outgoing, ControlRules.clickRisk("Confirm", "", hdfc))
         assertEquals(Risk.Safe, ControlRules.clickRisk("Pay contacts", "", gpay))
         assertEquals(Risk.Safe, ControlRules.clickRisk("Pay phone number", "", gpay))
         assertEquals(Risk.Safe, ControlRules.clickRisk("Pay UPI ID or number", "", gpay))
+        assertEquals(Risk.Safe, ControlRules.clickRisk("To Bank / UPI ID", "", phonepe))
+        assertEquals(Risk.Safe, ControlRules.clickRisk("To Self Account", "", phonepe))
+        assertEquals(Risk.Safe, ControlRules.clickRisk("Check Balance", "", phonepe))
         assertEquals(Risk.Safe, ControlRules.clickRisk("Enter amount", "", gpay))
         assertEquals(Risk.Safe, ControlRules.clickRisk("Rahul Sharma", "", gpay))
         assertEquals(Risk.Outgoing, ControlRules.clickRisk("Book tickets", ""))
@@ -61,7 +91,7 @@ class ControlRulesTest {
     }
 
     @Test
-    fun credentialFieldsAndAuthScreensAreStrictlyDetected() {
+    fun credentialFieldsAndAuthScreensAreStrictlyDetectedWithoutFalseNpciBlock() {
         assertTrue(ControlRules.isSensitiveCredentialField("Enter UPI PIN", ""))
         assertTrue(ControlRules.isSensitiveCredentialField("Enter 6-digit UPI PIN", ""))
         assertTrue(ControlRules.isSensitiveCredentialField("Enter MPIN", ""))
@@ -77,7 +107,28 @@ class ControlRulesTest {
         assertTrue(ControlRules.isSensitiveAuthScreen(listOf("HDFC Bank", "Enter 4-digit UPI PIN", "Submit")))
         assertTrue(ControlRules.isSensitiveAuthScreen(listOf("Verify OTP", "Resend OTP")))
         assertTrue(ControlRules.isSensitiveAuthScreen(listOf("Amount ₹100"), hasPasswordField = true))
-        assertFalse(ControlRules.isSensitiveAuthScreen(listOf("Pay contacts", "Pay UPI ID", "RuPay Credit Card", "Rahul")))
+        // Ordinary UPI screens frequently include "Powered by NPCI" footer/logo; must stay readable!
+        assertFalse(
+            ControlRules.isSensitiveAuthScreen(
+                listOf("Pay contacts", "Pay UPI ID", "Rahul Sharma", "rahul@okaxis", "Powered by NPCI"),
+            ),
+        )
+    }
+
+    @Test
+    fun transactionSummaryExtractsNonSensitiveDetailsAndExcludesCredentials() {
+        val summary = ControlRules.extractTransactionSummary(
+            listOf(
+                ScreenElement(1, "text", "Paying Rahul Sharma"),
+                ScreenElement(2, "text", "rahul@okaxis"),
+                ScreenElement(3, "field", "Enter amount", "500"),
+                ScreenElement(4, "field", "Enter UPI PIN", "1234"),
+            ),
+        )
+        assertTrue(summary, "Amount: ₹500" in summary)
+        assertTrue(summary, "Recipient: Rahul Sharma" in summary)
+        assertTrue(summary, "UPI ID: rahul@okaxis" in summary)
+        assertFalse(summary, "1234" in summary)
     }
 
     @Test

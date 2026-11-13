@@ -41,6 +41,9 @@ interface ToolHost {
 
     /** Starts something that shows no screen (Clock app) right away; returns the tool result. */
     fun startNow(intent: Intent, label: String, done: String): JSONObject
+
+    /** Ensures the user explicitly authorized limited non-sensitive assistance inside a banking/UPI app this turn. */
+    suspend fun authorizeFinance(packageName: String, appLabel: String): Boolean = true
 }
 
 /** Tool results the model reads. `status` is always one of these words. */

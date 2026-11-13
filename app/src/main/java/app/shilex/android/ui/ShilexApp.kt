@@ -74,9 +74,9 @@ fun ShilexApp(assistant: AssistantViewModel) {
     var onboarded by rememberSaveable { mutableStateOf(assistant.onboarded) }
     var tab by rememberSaveable { mutableIntStateOf(0) }
 
-    LaunchedEffect(wakeDot.visible, wakeDot.triggerId) {
+    LaunchedEffect(wakeDot.visible, wakeDot.triggerId, wakeDot.durationMs) {
         if (wakeDot.visible) {
-            delay(WakeIndicatorController.DISPLAY_DURATION_MS)
+            delay(WakeIndicatorController.cleanupDelayMs(wakeDot.durationMs))
             WakeIndicator.dismiss()
         }
     }
@@ -92,6 +92,8 @@ fun ShilexApp(assistant: AssistantViewModel) {
                 if (wakeDot.visible && assistant.wakeIndicator) {
                     TinyWakeDot(
                         triggerId = wakeDot.triggerId,
+                        durationMs = wakeDot.durationMs,
+                        dotSize = assistant.wakeDotSize,
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .statusBarsPadding()

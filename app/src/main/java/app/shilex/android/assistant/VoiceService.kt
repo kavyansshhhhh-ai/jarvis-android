@@ -159,7 +159,8 @@ class VoiceService : Service() {
         // Briefly hold a partial wake lock so screen-off handover completes cleanly.
         acquireHandoverWakeLock()
         val interactive = runCatching { getSystemService(PowerManager::class.java)?.isInteractive == true }.getOrDefault(true)
-        if (WakeIndicator.onWakeDetected(now, Settings(this).wakeIndicator, keyguard.isKeyguardLocked, interactive)) {
+        val settings = Settings(this)
+        if (WakeIndicator.onWakeDetected(now, settings.wakeIndicator, keyguard.isKeyguardLocked, interactive, settings.wakeDotDurationMs)) {
             WakeActivationOverlay.showBriefly(this)
         }
         runCatching { ToneGenerator(AudioManager.STREAM_SYSTEM, 70).startTone(ToneGenerator.TONE_PROP_BEEP, 130) }

@@ -33,15 +33,17 @@ import app.shilex.android.data.Settings
 import app.shilex.android.ui.ElectricCyan
 import app.shilex.android.ui.NeonViolet
 import app.shilex.android.ui.ShilexTheme
+import app.shilex.android.wake.WakeDotSize
 import app.shilex.android.wake.WakeIndicator
 import app.shilex.android.wake.WakeIndicatorController
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 /**
- * Tiny top-center Liquid Glass activation dot (~1.5s) shown only when the real wake word triggers.
- * Contains no text, labels, pills, or waveforms; never steals focus or touches, never wakes locked
- * screens, and suppresses itself over banking, password, and authentication screens.
+ * Subtle top-center Liquid Glass activation dot (~12dp core, ~22dp glow, ~2.8s default)
+ * shown only when the real wake word triggers. Contains no text, labels, pills, or waveforms;
+ * never steals focus or touches, never wakes locked screens, and suppresses itself over
+ * banking, UPI, password, and authentication screens.
  */
 object WakeActivationOverlay {
     private val main = Handler(Looper.getMainLooper())
@@ -54,7 +56,13 @@ object WakeActivationOverlay {
         appContext = app
         main.post {
             main.removeCallbacks(cleanupRunnable)
-            if (!WakeIndicator.state.value.visible) return@post
+            val wakeState = WakeIndicator.state.value
+            if (!wakeState.visible) return@post
+
+            val settings = Settings(app)
+            val dotSize = WakeDotSize.fromKey(settings.wakeDotSize)
+            val durationMs = WakeIndicatorController.clampDurationMs(wakeState.durationMs)
+            val cleanupMs = WakeIndicatorController.cleanupDelayMs(durationMs)
 
             val power = app.getSystemService(PowerManager::class.java)
             val keyguard = app.getSystemService(KeyguardManager::class.java)
@@ -62,7 +70,7 @@ object WakeActivationOverlay {
             val fgPkg = control?.foregroundPackage().orEmpty()
             val sensitiveAuth = control?.isSensitiveAuthActive() == true
             val showOverlay = WakeIndicator.shouldShowSystemOverlay(
-                indicatorEnabled = Settings(app).wakeIndicator,
+                indicatorEnabled = settings.wakeIndicator,
                 hasOverlayPermission = AndroidSettings.canDrawOverlays(app),
                 screenInteractive = power?.isInteractive == true,
                 keyguardLocked = keyguard?.isKeyguardLocked == true,
@@ -73,13 +81,13 @@ object WakeActivationOverlay {
 
             if (!showOverlay) {
                 removeWindowOnly(app)
-                main.postDelayed(cleanupRunnable, WakeIndicatorController.CLEANUP_DELAY_MS)
+                main.postDelayed(cleanupRunnable, cleanupMs)
                 return@post
             }
 
             removeWindowOnly(app)
             val windows = app.getSystemService(WindowManager::class.java)
-            val sizePx = (DOT_CANVAS_DP * app.resources.displayMetrics.density).roundToInt()
+            val sizePx = (dotSize.canvasDp * app.resources.displayMetrics.density).roundToInt()
             val topOffsetPx = statusBarHeightPx(app) + (TOP_MARGIN_DP * app.resources.displayMetrics.density).roundToInt()
             val params = WindowManager.LayoutParams(
                 sizePx,
@@ -95,17 +103,21 @@ object WakeActivationOverlay {
             }
 
             val overlay = OverlayHost(app)
-            val triggerId = WakeIndicator.state.value.triggerId
+            val triggerId = wakeState.triggerId
             overlay.open {
                 ShilexTheme {
-                    TinyWakeDot(triggerId = triggerId)
+                    TinyWakeDot(
+                        triggerId = triggerId,
+                        durationMs = durationMs,
+                        dotSize = dotSize,
+                    )
                 }
             }
             runCatching { windows.addView(overlay.view, params) }
                 .onSuccess { host = overlay }
                 .onFailure { overlay.close() }
 
-            main.postDelayed(cleanupRunnable, WakeIndicatorController.CLEANUP_DELAY_MS)
+            main.postDelayed(cleanupRunnable, cleanupMs)
         }
     }
 
@@ -136,24 +148,26 @@ object WakeActivationOverlay {
         return if (resId > 0) context.resources.getDimensionPixelSize(resId) else 0
     }
 
-    private const val DOT_CANVAS_DP = 28
     private const val TOP_MARGIN_DP = 6
 }
 
 /**
- * Tiny glowing cyan/violet Liquid Glass dot (no text, no pill, no card).
- * Pulses softly for ~1.5 seconds and automatically fades out.
+ * Subtle glowing cyan/violet Liquid Glass dot (no text, no pill, no card, no waveform).
+ * Default size renders a ~12dp luminous dot with ~22dp ambient halo, fading in and out smoothly.
  */
 @Composable
 fun TinyWakeDot(
     triggerId: Long,
     modifier: Modifier = Modifier,
+    durationMs: Long = WakeIndicatorController.DISPLAY_DURATION_MS,
+    dotSize: WakeDotSize = WakeDotSize.Standard,
 ) {
-    val alpha = remember(triggerId) { Animatable(0f) }
-    LaunchedEffect(triggerId) {
+    val effectiveDuration = WakeIndicatorController.clampDurationMs(durationMs)
+    val alpha = remember(triggerId, effectiveDuration) { Animatable(0f) }
+    LaunchedEffect(triggerId, effectiveDuration) {
         alpha.snapTo(0f)
         alpha.animateTo(1f, tween(WakeIndicatorController.FADE_IN_MS, easing = FastOutSlowInEasing))
-        val holdMs = (WakeIndicatorController.DISPLAY_DURATION_MS -
+        val holdMs = (effectiveDuration -
             WakeIndicatorController.FADE_IN_MS -
             WakeIndicatorController.FADE_OUT_MS).coerceAtLeast(400L)
         delay(holdMs)
@@ -161,27 +175,27 @@ fun TinyWakeDot(
     }
 
     val pulse by rememberInfiniteTransition(label = "wakeDotPulse").animateFloat(
-        initialValue = 0.86f,
-        targetValue = 1.18f,
+        initialValue = 0.90f,
+        targetValue = 1.12f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 520, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = 620, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse,
         ),
         label = "pulse",
     )
 
-    Canvas(modifier = modifier.size(28.dp)) {
+    Canvas(modifier = modifier.size(dotSize.canvasDp.dp)) {
         val a = alpha.value
         if (a <= 0.01f) return@Canvas
-        val coreRadius = 4.2.dp.toPx() * (0.94f + 0.14f * (pulse - 0.86f) / 0.32f)
-        val glowRadius = 13.dp.toPx() * pulse
+        val coreRadius = (dotSize.coreDiameterDp / 2f).dp.toPx() * (0.96f + 0.08f * (pulse - 0.90f) / 0.22f)
+        val glowRadius = (dotSize.glowDiameterDp / 2f).dp.toPx() * pulse
 
-        // Soft cyan-violet Liquid Glass halo
+        // Soft cyan-violet Liquid Glass halo (~22dp overall default)
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    ElectricCyan.copy(alpha = 0.55f * a),
-                    NeonViolet.copy(alpha = 0.28f * a),
+                    ElectricCyan.copy(alpha = 0.60f * a),
+                    NeonViolet.copy(alpha = 0.34f * a),
                     Color.Transparent,
                 ),
                 center = center,
@@ -191,16 +205,16 @@ fun TinyWakeDot(
             center = center,
         )
 
-        // Tiny glowing orb core
+        // Luminous Liquid Glass dot core (~12dp visible diameter default)
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    Color.White.copy(alpha = 0.95f * a),
-                    ElectricCyan.copy(alpha = 0.95f * a),
-                    NeonViolet.copy(alpha = 0.90f * a),
+                    Color.White.copy(alpha = 0.98f * a),
+                    ElectricCyan.copy(alpha = 0.96f * a),
+                    NeonViolet.copy(alpha = 0.92f * a),
                 ),
-                center = Offset(center.x - coreRadius * 0.28f, center.y - coreRadius * 0.28f),
-                radius = coreRadius * 1.35f,
+                center = Offset(center.x - coreRadius * 0.26f, center.y - coreRadius * 0.26f),
+                radius = coreRadius * 1.32f,
             ),
             radius = coreRadius,
             center = center,

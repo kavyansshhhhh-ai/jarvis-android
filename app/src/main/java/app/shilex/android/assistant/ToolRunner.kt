@@ -20,6 +20,7 @@ import app.shilex.android.local.MediaKey
 import app.shilex.android.learn.Habits
 import app.shilex.android.data.Settings as AppSettings
 import app.shilex.android.R
+import app.shilex.android.control.ControlRules
 import app.shilex.android.control.ControlService
 import app.shilex.android.live.FunctionCall
 import app.shilex.android.live.FunctionResult
@@ -108,6 +109,17 @@ class ToolRunner(
                         "Screen text was read this turn, so this needed the user's Allow tap and it wasn't given. " +
                             "Ask the user in your own words whether they want it; do it only if they say so.",
                     )
+                } else if (
+                    call.name == "open_app" &&
+                    trust.outsideText &&
+                    ControlRules.isFinanceAppName(call.args.optString("name")) &&
+                    !allowedAfterScreen("Open ${call.args.optString("name").ifBlank { "finance app" }} (after reading screen)")
+                ) {
+                    Diag.i("tool: open_app held for finance app after outside text")
+                    Results.failed(
+                        "not_allowed",
+                        "Opening a banking or UPI app after reading another screen needs the user's Allow tap.",
+                    )
                 } else {
                     TaskTracker.step(call.name, capability.title)
                     try {
@@ -150,6 +162,19 @@ class ToolRunner(
     private suspend fun allowedAfterScreen(title: String): Boolean {
         val overlay = ControlService.instance?.overlay?.takeUnless { it.stopped } ?: return false
         return overlay.confirm("$title (asked after reading the screen)")
+    }
+
+    override suspend fun authorizeFinance(packageName: String, appLabel: String): Boolean {
+        if (!ControlRules.isFinanceApp(packageName)) return true
+        if (trust.financeVerdict(packageName) == TurnTrust.Verdict.Allow) {
+            trust.authorizeFinance(packageName)
+            return true
+        }
+        val overlay = ControlService.instance?.overlay?.takeUnless { it.stopped } ?: return false
+        val name = appLabel.ifBlank { packageName }
+        val ok = overlay.confirm("Assist in $name (navigation & non-sensitive details only; you handle PIN & payment)")
+        if (ok) trust.authorizeFinance(packageName)
+        return ok
     }
 
     /** Opens the app a tool queued, once the reply has been spoken. */

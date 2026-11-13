@@ -56,4 +56,28 @@ class TurnTrustTest {
         assertEquals(Verdict.Allow, trust.verdict(cap("call_contact")))
         assertTrue(trust.mayLearn)
     }
+
+    @Test
+    fun financeAppsRequireAuthorizationAfterReadingOutsideScreen() {
+        val trust = TurnTrust()
+        val phonepe = "com.phonepe.app"
+        val hdfc = "com.snapwork.hdfc"
+
+        // Clean turn from user speech permits limited finance assistance and can authorize app
+        assertEquals(Verdict.Allow, trust.financeVerdict(phonepe))
+        trust.authorizeFinance(phonepe)
+        trust.after("open_app")
+
+        // Same authorized app stays permitted this turn, while switching to another finance app asks user
+        assertEquals(Verdict.Allow, trust.financeVerdict(phonepe))
+        assertEquals(Verdict.AskUser, trust.financeVerdict(hdfc))
+
+        // After outside screen text without prior finance authorization, user confirmation is required
+        trust.userSpoke()
+        trust.after("ui_read")
+        assertEquals(Verdict.AskUser, trust.financeVerdict(phonepe))
+
+        trust.authorizeFinance(phonepe)
+        assertEquals(Verdict.Allow, trust.financeVerdict(phonepe))
+    }
 }

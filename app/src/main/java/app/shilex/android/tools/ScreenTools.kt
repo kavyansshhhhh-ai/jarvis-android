@@ -36,7 +36,15 @@ object ScreenTools {
     private suspend fun afterAction(service: ControlService, did: String): JSONObject {
         service.overlay.showActive()
         delay(SETTLE_MS)
-        val snap = service.snapshot() ?: return Results.done("$did The screen couldn't be read.")
+        val fg = service.foregroundPackage()
+        val snap = service.snapshot() ?: return if (ControlRules.isFinanceApp(fg)) {
+            Results.done(
+                "$did This banking or UPI screen blocked Accessibility inspection for security. " +
+                    "Hand control back to the user with hand_to_user and explain why.",
+            )
+        } else {
+            Results.done("$did The screen couldn't be read.")
+        }
         if (snap.blocked) return Results.done("$did Now in ${snap.appLabel}, which ${Branding.ASSISTANT_NAME} doesn't read.")
         if (snap.sensitiveAuth) {
             return Results.done(
@@ -44,18 +52,30 @@ object ScreenTools {
                     "Stop here, never read or enter credentials, and call hand_to_user so the user finishes this step.",
             )
         }
-        if (snap.upiApp && snap.elements.isEmpty()) {
+        if (snap.financeApp && (snap.elements.isEmpty() || snap.restrictedBySystem)) {
             return Results.done(
-                "$did ${snap.appLabel} blocked Accessibility inspection on this screen for security. " +
-                    "Hand control back to the user and explain why.",
+                "$did ${snap.appLabel} or Android blocked Accessibility inspection on this screen for security. " +
+                    "Hand control back to the user with hand_to_user and explain why.",
             )
         }
-        return Results.done("$did Screen now:\n" + ScreenText.describe(snap.appLabel, snap.elements, snap.more))
+        val summary = if (snap.financeApp) ControlRules.extractTransactionSummary(snap.elements) else ""
+        val prefix = if (summary.isNotEmpty()) "$did Summary on screen: $summary\n" else "$did "
+        return Results.done(prefix + "Screen now:\n" + ScreenText.describe(snap.appLabel, snap.elements, snap.more))
     }
+
+    private fun appLabel(service: ControlService, pkg: String): String =
+        if (pkg.isEmpty()) "this app" else runCatching {
+            service.packageManager.getApplicationLabel(service.packageManager.getApplicationInfo(pkg, 0)).toString()
+        }.getOrDefault(pkg)
 
     private fun blocked(app: String) = Results.failed(
         "blocked",
-        "${Branding.ASSISTANT_NAME} doesn't read or touch $app (banking, unsupported payment apps, passwords, app store or settings). The user does this part.",
+        "${Branding.ASSISTANT_NAME} doesn't read or touch $app (passwords, authenticators, PIN components, app store or settings). The user does this part.",
+    )
+
+    private fun financeDeclined(app: String) = Results.failed(
+        "not_allowed",
+        "The user didn't allow assistance in $app. Stop and let the user handle it directly.",
     )
 
     private fun sensitiveAuth(what: String) = Results.failed(
@@ -64,16 +84,19 @@ object ScreenTools {
             "Explain this and call hand_to_user so the user completes it directly.",
     )
 
-    private fun upiAccessibilityRestricted(app: String) = Results.failed(
+    private fun accessibilityRestricted(app: String) = Results.failed(
         "accessibility_restricted",
-        "$app or Android blocked Accessibility access on this screen for security. Hand control back to the user and explain why.",
+        "$app or Android blocked Accessibility access on this screen for security. Never bypass secure windows—hand control back to the user with hand_to_user and explain why.",
     )
 
     /** Paying is always the user's: a pay or buy tap is refused, not offered on the Allow card. */
-    private fun payment(label: String) = Results.failed(
+    private fun payment(label: String, summary: String = "") = Results.failed(
         "payment_is_users",
-        "\"${ScreenText.shorten(label.ifEmpty { "This" })}\" authorizes payment. Stop here: summarize the visible recipient and amount on screen, " +
-            "tell the user to tap Pay and enter their UPI PIN directly in the official app, and call hand_to_user if waiting for the result.",
+        buildString {
+            append("\"${ScreenText.shorten(label.ifEmpty { "This" })}\" authorizes payment. ")
+            if (summary.isNotEmpty()) append("Transaction summary: $summary. ")
+            append("Stop here: tell the user the summary, ask them to tap Pay and enter their UPI PIN, OTP, or password directly in the official app, and call hand_to_user.")
+        },
     )
 
     private object UiRead : PhoneTool {
@@ -87,7 +110,12 @@ object ScreenTools {
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
             val (service, problem) = control()
             service ?: return problem!!
-            val snap = service.snapshot() ?: return Results.failed("no_screen", "The screen couldn't be read.")
+            val fg = service.foregroundPackage()
+            val snap = service.snapshot() ?: return if (ControlRules.isFinanceApp(fg)) {
+                accessibilityRestricted(appLabel(service, fg))
+            } else {
+                Results.failed("no_screen", "The screen couldn't be read.")
+            }
             if (snap.packageName == host.context.packageName) {
                 return Results.failed(
                     "own_screen",
@@ -96,8 +124,15 @@ object ScreenTools {
             }
             if (snap.blocked) return blocked(snap.appLabel)
             if (snap.sensitiveAuth) return sensitiveAuth(snap.appLabel)
-            if (snap.upiApp && snap.elements.isEmpty()) return upiAccessibilityRestricted(snap.appLabel)
-            return Results.done(ScreenText.describe(snap.appLabel, snap.elements, snap.more))
+            if (snap.financeApp && !host.authorizeFinance(snap.packageName, snap.appLabel)) {
+                return financeDeclined(snap.appLabel)
+            }
+            if (snap.financeApp && (snap.elements.isEmpty() || snap.restrictedBySystem)) {
+                return accessibilityRestricted(snap.appLabel)
+            }
+            val summary = if (snap.financeApp) ControlRules.extractTransactionSummary(snap.elements) else ""
+            val body = ScreenText.describe(snap.appLabel, snap.elements, snap.more)
+            return Results.done(if (summary.isNotEmpty()) "Summary on screen: $summary\n$body" else body)
         }
     }
 
@@ -122,24 +157,30 @@ object ScreenTools {
             node.second?.let { return it }
             val target = node.first!!
             val pkg = target.packageName?.toString().orEmpty()
-            if (ControlRules.blocked(pkg)) return blocked(pkg)
+            val name = appLabel(service, pkg)
+            if (ControlRules.blocked(pkg)) return blocked(name)
             if (service.isSensitiveAuthActive()) return sensitiveAuth("authentication screen")
+            if (ControlRules.isFinanceApp(pkg) && !host.authorizeFinance(pkg, name)) {
+                return financeDeclined(name)
+            }
             val label = service.labelOf(target)
             val viewId = target.viewIdResourceName.orEmpty()
             if (ControlRules.isCredentialAction(label, viewId, target.isPassword)) {
                 return sensitiveAuth(ScreenText.shorten(label.ifEmpty { "credential control" }))
             }
+            val summary = if (ControlRules.isFinanceApp(pkg)) ControlRules.extractTransactionSummary(service.lastElements()) else ""
             val risk = ControlRules.clickRisk(label, viewId, pkg)
-            if (risk == ControlRules.Risk.Money) return payment(label)
+            if (risk == ControlRules.Risk.Money) return payment(label, summary)
             if (risk != ControlRules.Risk.Safe) {
-                val what = "Tap \"${ScreenText.shorten(label.ifEmpty { "this button" })}\""
+                val shortLabel = ScreenText.shorten(label.ifEmpty { "this button" })
+                val what = if (summary.isNotEmpty()) "Tap \"$shortLabel\" ($summary)" else "Tap \"$shortLabel\""
                 if (!service.overlay.confirm(what)) {
                     return Results.failed("cancelled", "The user didn't allow it. Don't try again unless they ask.")
                 }
             }
             if (!service.click(target)) {
-                return if (ControlRules.isSupportedUpiApp(pkg)) {
-                    upiAccessibilityRestricted("The UPI app")
+                return if (ControlRules.isFinanceApp(pkg)) {
+                    accessibilityRestricted(name)
                 } else {
                     Results.failed("tap_failed", "The tap didn't go through.")
                 }
@@ -152,10 +193,17 @@ object ScreenTools {
             val number = args.optInt("number", 0)
             if (number > 0) return service.node(number)?.let { it to null }
             val label = args.text("label")
-            val snap = service.snapshot() ?: return null
+            val fg = service.foregroundPackage()
+            val snap = service.snapshot() ?: return if (ControlRules.isFinanceApp(fg)) {
+                null to accessibilityRestricted(appLabel(service, fg))
+            } else {
+                null
+            }
             if (snap.blocked) return null to blocked(snap.appLabel)
             if (snap.sensitiveAuth) return null to sensitiveAuth(snap.appLabel)
-            if (snap.upiApp && snap.elements.isEmpty()) return null to upiAccessibilityRestricted(snap.appLabel)
+            if (snap.financeApp && (snap.elements.isEmpty() || snap.restrictedBySystem)) {
+                return null to accessibilityRestricted(snap.appLabel)
+            }
             val matches = ScreenText.find(snap.elements, label)
             return when {
                 matches.isEmpty() -> null
@@ -187,15 +235,19 @@ object ScreenTools {
                 ?.takeIf { it.isEditable }
                 ?: return Results.failed("no_field", "No text field selected. Call ui_read and give the field's number.")
             val pkg = field.packageName?.toString().orEmpty()
-            if (ControlRules.blocked(pkg)) return blocked("this app")
+            val name = appLabel(service, pkg)
+            if (ControlRules.blocked(pkg)) return blocked(name)
+            if (ControlRules.isFinanceApp(pkg) && !host.authorizeFinance(pkg, name)) {
+                return financeDeclined(name)
+            }
             val label = service.labelOf(field)
             val viewId = field.viewIdResourceName.orEmpty()
-            if (ControlRules.isSensitiveCredentialField(label, viewId, field.isPassword)) {
+            if (ControlRules.isCredentialAction(label, viewId, field.isPassword)) {
                 return sensitiveAuth(ScreenText.shorten(label.ifEmpty { "credential field" }))
             }
             if (!service.type(field, args.text("text"))) {
-                return if (ControlRules.isSupportedUpiApp(pkg)) {
-                    upiAccessibilityRestricted("The UPI app")
+                return if (ControlRules.isFinanceApp(pkg)) {
+                    accessibilityRestricted(name)
                 } else {
                     Results.failed("type_failed", "Typing didn't work in that field.")
                 }
@@ -206,8 +258,8 @@ object ScreenTools {
 
     /**
      * Click-by-sight: for buttons ui_read can't name (games, image-only buttons, canvases).
-     * The tap's risk is the worst of what the model asked for, what Gemini saw there and the
-     * control Android reports at that point, so a mislabelled Send still asks for Allow.
+     * Never uploads screenshots of banking or UPI screens. The tap's risk is the worst of what
+     * the model asked for, what Gemini saw there and the control Android reports at that point.
      */
     private object UiTapSeen : PhoneTool {
         override val name = "ui_tap_seen"
@@ -215,7 +267,7 @@ object ScreenTools {
         override fun declaration() = Schema.function(
             name,
             "Taps something by looking at the screen. Only when ui_read doesn't list it (image buttons, " +
-                "games). Sends a screenshot to Gemini. Send, call, delete and similar taps show Allow first; pay and PIN/OTP/password taps are refused.",
+                "games). Sends a screenshot to Gemini (disabled on banking/UPI screens for security). Send, call, delete and similar taps show Allow first; pay and PIN/OTP/password taps are refused.",
             Schema.string("target", "What to tap, as seen: e.g. \"the red play button in the middle\".", required = true),
         )
 
@@ -224,20 +276,23 @@ object ScreenTools {
             service ?: return problem!!
             val target = args.text("target").ifEmpty { return Results.failed("no_target", "Say what to tap.") }
             val pkg = service.foregroundPackage()
+            val fgLabel = appLabel(service, pkg)
             if (pkg == host.context.packageName) return Results.failed("own_screen", "That's ${Branding.ASSISTANT_NAME} itself.")
-            if (ControlRules.blocked(pkg)) return blocked("this app")
+            if (ControlRules.blocked(pkg)) return blocked(fgLabel)
             if (service.isSensitiveAuthActive()) return sensitiveAuth("authentication screen")
+            if (ControlRules.isFinanceApp(pkg)) {
+                return Results.failed(
+                    "screenshot_restricted_finance",
+                    "For security, ${Branding.ASSISTANT_NAME} never captures or uploads screenshots of $fgLabel. Use ui_read / ui_click if available, or call hand_to_user so the user does this step.",
+                )
+            }
             if (ControlRules.isCredentialAction(target, "")) return sensitiveAuth(target)
             val key = KeyVault(host.context).read(KeyVault.GEMINI_KEY)
                 ?: return Results.failed("no_key", "Looking at the screen needs the Gemini key.")
-            val shot = service.screenshot() ?: return if (ControlRules.isSupportedUpiApp(pkg)) {
-                upiAccessibilityRestricted("The UPI app")
-            } else {
-                Results.failed(
-                    "no_sight",
-                    "This screen can't be looked at (protected, or Android older than 11). The user taps this part.",
-                )
-            }
+            val shot = service.screenshot() ?: return Results.failed(
+                "no_sight",
+                "This screen can't be looked at (protected, or Android older than 11). The user taps this part.",
+            )
             val seen = when (val found = SightAim(host.http, key).locate(shot, target)) {
                 is SightAim.Outcome.Found -> found
                 SightAim.Outcome.NotFound -> return Results.failed("not_seen", "Couldn't see \"$target\" on screen. Say what you see instead.")
@@ -246,7 +301,7 @@ object ScreenTools {
             val node = service.nodeAt(seen.x, seen.y)
             val there = node?.packageName?.toString().orEmpty()
             if (there == host.context.packageName) return Results.failed("own_screen", "That spot is ${Branding.ASSISTANT_NAME}'s own button.")
-            if (ControlRules.blocked(there)) return blocked("this app")
+            if (ControlRules.blocked(there) || ControlRules.isFinanceApp(there)) return blocked(appLabel(service, there))
             val label = node?.let(service::labelOf).orEmpty()
             val nodeId = node?.viewIdResourceName.orEmpty()
             if (ControlRules.isCredentialAction(label, nodeId, node?.isPassword == true) ||
@@ -272,8 +327,8 @@ object ScreenTools {
 
     /**
      * Secure-screen handover: the steps JARVIS must not do (final Pay authorization, a PIN,
-     * a password, an OTP, a banking app, or an Accessibility-restricted screen) go to the user
-     * with a "Your turn" card; after Done, JARVIS inspects the visible non-sensitive result screen.
+     * a password, an OTP, or an Accessibility-restricted screen) go to the user with a
+     * "Your turn" card; after Done, JARVIS inspects only the visible non-sensitive result screen.
      */
     private object HandToUser : PhoneTool {
         override val name = "hand_to_user"
@@ -281,7 +336,7 @@ object ScreenTools {
         override fun declaration() = Schema.function(
             name,
             "Gives one step to the user and waits (up to 2.5 min) until they tap Done: final payment authorization, a UPI PIN, MPIN, " +
-                "password, OTP, CVV, a banking app, or a screen that restricts Accessibility. Then returns the resulting non-sensitive status screen.",
+                "password, OTP, CVV, or a screen that restricts Accessibility. Then returns the resulting non-sensitive status screen.",
             Schema.string("step", "The step in a few words, e.g. \"Tap Pay and enter your UPI PIN\".", required = true),
         )
 
@@ -319,8 +374,12 @@ object ScreenTools {
             val (service, problem) = control()
             service ?: return problem!!
             val pkg = service.foregroundPackage()
-            if (ControlRules.blocked(pkg)) return blocked("this app")
+            val name = appLabel(service, pkg)
+            if (ControlRules.blocked(pkg)) return blocked(name)
             if (service.isSensitiveAuthActive()) return sensitiveAuth("authentication screen")
+            if (ControlRules.isFinanceApp(pkg) && !host.authorizeFinance(pkg, name)) {
+                return financeDeclined(name)
+            }
             if (!service.scroll(down = args.text("direction") != "up")) return Results.failed("no_scroll", "Nothing to scroll here.")
             return afterAction(service, "Scrolled.")
         }

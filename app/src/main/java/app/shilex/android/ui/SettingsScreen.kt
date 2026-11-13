@@ -9,23 +9,33 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -38,6 +48,8 @@ import app.shilex.android.data.Settings as AppSettings
 import app.shilex.android.memory.MemoryStore
 import app.shilex.android.notify.NotificationWatch
 import app.shilex.android.orb.FloatingOrb
+import app.shilex.android.wake.WakeDotSize
+import app.shilex.android.wake.WakeIndicatorController
 import app.shilex.android.wake.WakeState
 import app.shilex.android.wake.WakeWordModel
 
@@ -54,6 +66,8 @@ fun SettingsScreen(assistant: AssistantViewModel) {
     var engine by remember { mutableStateOf(assistant.speechEngine) }
     var batteryExempt by remember { mutableStateOf(assistant.batteryExempt) }
     var dotOn by remember { mutableStateOf(assistant.wakeIndicator) }
+    var dotSize by remember { mutableStateOf(assistant.wakeDotSize) }
+    var dotDurationMs by remember { mutableLongStateOf(assistant.wakeDotDurationMs) }
     var overlayAllowed by remember { mutableStateOf(FloatingOrb.allowed(context)) }
     var micGranted by remember {
         mutableStateOf(
@@ -252,7 +266,7 @@ fun SettingsScreen(assistant: AssistantViewModel) {
 
             SwitchRow(
                 "Wake activation dot",
-                "Shows a tiny top-center Liquid Glass dot for 1–2 seconds only when \"${WakeWordModel.PHRASE}\" triggers.",
+                "Shows a subtle ~${dotSize.coreDiameterDp}dp top-center Liquid Glass dot for ${formatSeconds(dotDurationMs)} only when \"${WakeWordModel.PHRASE}\" triggers.",
                 dotOn,
             ) { on ->
                 dotOn = on
@@ -260,12 +274,34 @@ fun SettingsScreen(assistant: AssistantViewModel) {
             }
 
             if (dotOn) {
+                OptionChoiceRow(
+                    title = "Dot size",
+                    detail = "Core dot & Liquid Glass glow (default Standard 12dp).",
+                    options = WakeDotSize.entries.map { it to "${it.label} (${it.coreDiameterDp}dp)" },
+                    selected = dotSize,
+                    onSelect = { chosen ->
+                        dotSize = chosen
+                        assistant.wakeDotSize = chosen
+                    },
+                )
+
+                OptionChoiceRow(
+                    title = "Display duration",
+                    detail = "How long the dot fades in, pulses, and fades out (default 2.8s).",
+                    options = WakeIndicatorController.DURATION_PRESETS_MS.map { it to formatSeconds(it) },
+                    selected = dotDurationMs,
+                    onSelect = { chosenMs ->
+                        dotDurationMs = chosenMs
+                        assistant.wakeDotDurationMs = chosenMs
+                    },
+                )
+
                 InfoRow(
                     "Dot over other apps",
                     if (overlayAllowed) {
-                        "Allowed. Appears on your home screen and ordinary apps (suppressed on banking, lock, and PIN screens)."
+                        "Allowed. Appears on your home screen and ordinary apps (suppressed on banking, UPI, lock, and PIN screens)."
                     } else {
-                        "Optional. Allow Display over other apps so the tiny dot appears on your home screen and other apps."
+                        "Optional. Allow Display over other apps so the subtle dot appears on your home screen and other apps."
                     },
                 ) {
                     if (overlayAllowed) {
@@ -402,6 +438,65 @@ private fun engineText(engine: String?) = when (engine) {
     "offline" -> "Offline model on this phone (Vosk). No internet needed; best with English words."
     "network" -> "The phone's speech service (usually Google). Needs internet."
     else -> "Nothing local is available, so Gemini hears every request."
+}
+
+private fun formatSeconds(ms: Long): String =
+    String.format(java.util.Locale.US, "%.1fs", ms / 1000f)
+
+@Composable
+private fun <T> OptionChoiceRow(
+    title: String,
+    detail: String,
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(title, style = MaterialTheme.typography.titleMedium, color = PureWhite)
+        Text(detail, style = MaterialTheme.typography.bodySmall, color = Muted)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            options.forEach { (value, label) ->
+                val isSelected = value == selected
+                val shape = RoundedCornerShape(14.dp)
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(shape)
+                        .background(
+                            if (isSelected) {
+                                Brush.horizontalGradient(listOf(ElectricCyan.copy(alpha = 0.22f), NeonViolet.copy(alpha = 0.16f)))
+                            } else {
+                                Brush.horizontalGradient(listOf(Color(0x14FFFFFF), Color(0x0DFFFFFF)))
+                            },
+                        )
+                        .border(
+                            1.dp,
+                            if (isSelected) ElectricCyan.copy(alpha = 0.65f) else Color(0x22FFFFFF),
+                            shape,
+                        )
+                        .clickable { onSelect(value) }
+                        .padding(horizontal = 8.dp, vertical = 9.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (isSelected) ElectricCyan else Muted,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                }
+            }
+        }
+    }
 }
 
 private fun versionName(context: android.content.Context): String =

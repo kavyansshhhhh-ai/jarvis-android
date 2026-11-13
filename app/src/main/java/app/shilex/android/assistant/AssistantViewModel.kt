@@ -14,6 +14,7 @@ import app.shilex.android.task.TaskTracker
 import app.shilex.android.orb.WakeActivationOverlay
 import app.shilex.android.wake.VoiceProfile
 import app.shilex.android.wake.VoiceSetup
+import app.shilex.android.wake.WakeDotSize
 import app.shilex.android.wake.WakeDotState
 import app.shilex.android.wake.WakeIndicator
 import app.shilex.android.wake.WakeState
@@ -171,6 +172,14 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
             settings.wakeIndicator = value
             if (!value) WakeActivationOverlay.dismiss(getApplication())
         }
+
+    var wakeDotSize: WakeDotSize
+        get() = WakeDotSize.fromKey(settings.wakeDotSize)
+        set(value) { settings.wakeDotSize = value.key }
+
+    var wakeDotDurationMs: Long
+        get() = settings.wakeDotDurationMs
+        set(value) { settings.wakeDotDurationMs = value }
 
     fun refreshWakeState() {
         if (VoiceService.wakeWordWanted(getApplication())) {

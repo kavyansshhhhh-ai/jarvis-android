@@ -27,6 +27,7 @@ class ControlService : AccessibilityService() {
 
     // Numbers from the last ui_read, so "tap 4" means what the model just saw.
     @Volatile private var lastNodes: Map<Int, AccessibilityNodeInfo> = emptyMap()
+    @Volatile private var lastElementsList: List<ScreenElement> = emptyList()
 
     override fun onServiceConnected() {
         instance = this
@@ -50,10 +51,14 @@ class ControlService : AccessibilityService() {
         val elements: List<ScreenElement>,
         val more: Boolean,
         val sensitiveAuth: Boolean = false,
+        val restrictedBySystem: Boolean = false,
     ) {
         val blocked get() = ControlRules.blocked(packageName)
         val upiApp get() = ControlRules.isSupportedUpiApp(packageName)
+        val financeApp get() = ControlRules.isFinanceApp(packageName)
     }
+
+    fun lastElements(): List<ScreenElement> = lastElementsList
 
     fun foregroundPackage(): String = rootInActiveWindow?.packageName?.toString().orEmpty()
 
@@ -62,6 +67,7 @@ class ControlService : AccessibilityService() {
         val root = rootInActiveWindow ?: return false
         fun visit(node: AccessibilityNodeInfo): Boolean {
             if (!node.isVisibleToUser) return false
+            if (isNodeDataSensitive(node)) return false
             val viewId = node.viewIdResourceName?.substringAfterLast('/').orEmpty()
             if (node.isPassword || ControlRules.isSensitiveAuthCue(ownLabel(node), viewId, node.isPassword)) return true
             for (i in 0 until node.childCount) {
@@ -72,7 +78,7 @@ class ControlService : AccessibilityService() {
         return visit(root)
     }
 
-    /** Reads the app in front. Blocked apps and sensitive PIN/OTP/password screens come back without contents. */
+    /** Reads the app in front. Blocked apps, sensitive PIN/OTP/password screens, and system-restricted nodes come back without contents. */
     fun snapshot(): Snapshot? {
         val root = rootInActiveWindow ?: return null
         val pkg = root.packageName?.toString().orEmpty()
@@ -81,14 +87,25 @@ class ControlService : AccessibilityService() {
         }.getOrDefault(pkg)
         if (ControlRules.blocked(pkg)) {
             lastNodes = emptyMap()
+            lastElementsList = emptyList()
             return Snapshot(pkg, label, emptyList(), false)
+        }
+        if (isNodeDataSensitive(root)) {
+            lastNodes = emptyMap()
+            lastElementsList = emptyList()
+            return Snapshot(pkg, label, emptyList(), false, restrictedBySystem = true)
         }
         val elements = mutableListOf<ScreenElement>()
         val nodes = mutableMapOf<Int, AccessibilityNodeInfo>()
         var more = false
         var sensitiveAuth = false
+        var restrictedBySystem = false
         fun visit(node: AccessibilityNodeInfo, insideTappable: Boolean) {
             if (sensitiveAuth || !node.isVisibleToUser) return
+            if (isNodeDataSensitive(node)) {
+                restrictedBySystem = true
+                return
+            }
             val viewId = node.viewIdResourceName?.substringAfterLast('/').orEmpty()
             val own = ownLabel(node)
             if (node.isPassword || ControlRules.isSensitiveAuthCue(own, viewId, node.isPassword)) {
@@ -123,11 +140,22 @@ class ControlService : AccessibilityService() {
         visit(root, false)
         if (sensitiveAuth) {
             lastNodes = emptyMap()
+            lastElementsList = emptyList()
             return Snapshot(pkg, label, emptyList(), false, sensitiveAuth = true)
         }
         lastNodes = nodes
-        return Snapshot(pkg, label, elements, more || elements.size >= ScreenText.MAX_ELEMENTS)
+        lastElementsList = elements.toList()
+        return Snapshot(
+            pkg,
+            label,
+            elements,
+            more || elements.size >= ScreenText.MAX_ELEMENTS,
+            restrictedBySystem = restrictedBySystem && elements.isEmpty(),
+        )
     }
+
+    private fun isNodeDataSensitive(node: AccessibilityNodeInfo): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && node.isAccessibilityDataSensitive
 
     fun node(number: Int): AccessibilityNodeInfo? = lastNodes[number]?.takeIf { it.refresh() }
 

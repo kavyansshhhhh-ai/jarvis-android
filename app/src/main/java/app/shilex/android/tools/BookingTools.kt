@@ -84,7 +84,7 @@ object BookingTools {
                 ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
             if (intent != null) {
                 val control = ControlService.instance?.takeIf { !it.overlay.stopped }
-                if (control != null && request.movie.isNotEmpty() && !ControlRules.blocked(app.packageName)) {
+                if (control != null && request.movie.isNotEmpty() && !ControlRules.blocked(app.packageName) && !ControlRules.isFinanceApp(app.packageName)) {
                     // The phone searches for the film itself; the model takes over from its page.
                     val opened = AppTools.openAndRead(host, intent, app, "Opened ${app.label}.")
                     if (opened?.optString("status") != "done") return opened ?: Results.failed("not_opened", "${app.label} didn't open.")

@@ -73,14 +73,23 @@ object AppTools {
         if (ControlRules.blocked(app.packageName)) {
             return Results.done("Opened ${app.label}. ${Branding.ASSISTANT_NAME} doesn't read or touch this app; the user takes it from here.")
         }
-        val snap = control.snapshot() ?: return Results.done(done)
+        val snap = control.snapshot() ?: return if (ControlRules.isFinanceApp(app.packageName)) {
+            Results.done("$done ${app.label} restricts Accessibility inspection here for security; the user takes it from here.")
+        } else {
+            Results.done(done)
+        }
         if (snap.sensitiveAuth) {
             return Results.done("$done Now on a PIN, OTP, or password screen. Stop here and let the user handle it directly.")
         }
-        if (snap.upiApp && snap.elements.isEmpty()) {
-            return Results.done("$done ${app.label} restricts Accessibility inspection here for security; the user takes it from here.")
+        if (snap.financeApp && !host.authorizeFinance(app.packageName, app.label)) {
+            return Results.done("Opened ${app.label}. Limited assistance wasn't authorized, so the user takes it from here.")
         }
-        return Results.done("$done Screen now:\n" + ScreenText.describe(snap.appLabel, snap.elements, snap.more))
+        if (snap.financeApp && (snap.elements.isEmpty() || snap.restrictedBySystem)) {
+            return Results.done("$done ${app.label} or Android restricts Accessibility inspection here for security; the user takes it from here.")
+        }
+        val summary = if (snap.financeApp) ControlRules.extractTransactionSummary(snap.elements) else ""
+        val prefix = if (summary.isNotEmpty()) "$done Summary on screen: $summary\n" else "$done "
+        return Results.done(prefix + "Screen now:\n" + ScreenText.describe(snap.appLabel, snap.elements, snap.more))
     }
 
     private const val OPEN_WAIT_MS = 6_000L
