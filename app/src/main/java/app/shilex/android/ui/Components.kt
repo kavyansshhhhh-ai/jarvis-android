@@ -17,8 +17,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -43,8 +46,24 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+val FloatingDockHeight = LiquidDockMath.DOCK_HEIGHT_DP.dp
+val FloatingDockOuterVerticalMargin = LiquidDockMath.DOCK_OUTER_VERTICAL_MARGIN_DP.dp
+val FloatingDockScrollClearance = LiquidDockMath.SCROLL_CLEARANCE_DP.dp
+
+/** Bottom padding needed for scrollable content so the last item scrolls completely above the floating dock + nav bar. */
+@Composable
+fun floatingDockContentBottomPadding(clearance: Dp = FloatingDockScrollClearance): Dp =
+    clearance + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+/** Spacer placed at the end of scrollable columns so bottom cards never hide behind the floating dock. */
+@Composable
+fun FloatingDockBottomSpacer(clearance: Dp = FloatingDockScrollClearance) {
+    Spacer(Modifier.height(floatingDockContentBottomPadding(clearance)))
+}
 
 /** Controls animated background blur depth when modal Liquid Glass sheets are presented. */
 val LocalModalOverlayActive = compositionLocalOf<(Boolean) -> Unit> { {} }

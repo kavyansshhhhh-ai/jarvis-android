@@ -56,7 +56,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -85,6 +85,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalGraphicsContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -103,8 +105,6 @@ import app.shilex.android.task.Task
 import app.shilex.android.wake.WakeIndicator
 import app.shilex.android.wake.WakeIndicatorController
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private enum class Tab(val label: String, val icon: ImageVector) {
@@ -285,16 +285,21 @@ private fun Content(
             }
         }
 
+        val safeTab = tab.coerceIn(0, Tab.entries.lastIndex)
+
         // Interactive Finger-Tracking Floating Liquid Glass Capsule Navigation Dock
         FloatingLiquidGlassDock(
-            selectedTab = tab,
-            onSelectTab = setTab,
+            selectedTab = safeTab,
+            onSelectTab = { next ->
+                val clamped = next.coerceIn(0, Tab.entries.lastIndex)
+                if (clamped != safeTab) setTab(clamped)
+            },
             backdropLayer = contentLayer,
             contentOffset = contentOffset,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = FloatingDockOuterVerticalMargin),
         )
     }
 }
@@ -310,11 +315,11 @@ private fun FloatingLiquidGlassDock(
     val dockShape = RoundedCornerShape(34.dp)
     var dockOffset by remember { mutableStateOf(Offset.Zero) }
     val haptic = LocalHapticFeedback.current
-    val scope = rememberCoroutineScope()
 
     var isPressed by remember { mutableStateOf(false) }
-    var isDragging by remember { mutableStateOf(false) }
-    var previewTab by remember { mutableIntStateOf(selectedTab) }
+    var dragTargetOffsetPx by remember { mutableStateOf<Float?>(null) }
+    val isDragging = dragTargetOffsetPx != null
+
     val dockScale by animateFloatAsState(
         targetValue = if (isPressed) 1.018f else 1f,
         animationSpec = spring(dampingRatio = 0.72f, stiffness = Spring.StiffnessMediumLow),
@@ -324,7 +329,7 @@ private fun FloatingLiquidGlassDock(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(66.dp)
+            .height(FloatingDockHeight)
             .graphicsLayer {
                 scaleX = dockScale
                 scaleY = dockScale
@@ -374,34 +379,63 @@ private fun FloatingLiquidGlassDock(
                 .border(1.dp, GlassDockBorderGradient, dockShape),
         )
 
-        // Finger-tracking sliding Liquid Glass lens + tab items
+        // Finger-tracking sliding Liquid Glass lens + tab items (single source of truth = selectedTab)
         BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 6.dp),
+            modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.CenterStart,
         ) {
             val count = Tab.entries.size
-            val slotWidth = maxWidth / count
+            val innerInsetDp = 6.dp
+            val stripWidth = (maxWidth - innerInsetDp * 2).coerceAtLeast(1.dp)
+            val slotWidth = stripWidth / count
             val density = LocalDensity.current
+            val innerInsetPx = with(density) { innerInsetDp.toPx() }
             val slotWidthPx = with(density) { slotWidth.toPx().coerceAtLeast(1f) }
             val padPx = with(density) { 2.dp.toPx() }
-            val lensX = remember { Animatable(selectedTab * slotWidthPx) }
 
-            LaunchedEffect(selectedTab, slotWidthPx, isDragging) {
-                if (!isDragging) {
-                    previewTab = selectedTab
+            val currentSelectedTab by rememberUpdatedState(selectedTab)
+            val currentOnSelectTab by rememberUpdatedState(onSelectTab)
+            val currentSlotWidthPx by rememberUpdatedState(slotWidthPx)
+            val currentInnerInsetPx by rememberUpdatedState(innerInsetPx)
+
+            val lensX = remember(count) {
+                Animatable(LiquidDockMath.offsetForTab(selectedTab, slotWidthPx, count))
+            }
+            var layoutSnapped by remember { mutableStateOf(false) }
+
+            LaunchedEffect(slotWidthPx) {
+                if (!layoutSnapped && slotWidthPx > 1f) {
+                    lensX.snapTo(LiquidDockMath.offsetForTab(currentSelectedTab, slotWidthPx, count))
+                    layoutSnapped = true
+                }
+            }
+
+            // Single authoritative driver for lensX: either follows active drag or locks cleanly to selectedTab.
+            LaunchedEffect(selectedTab, slotWidthPx, dragTargetOffsetPx) {
+                val activeDrag = dragTargetOffsetPx
+                if (activeDrag != null) {
                     lensX.animateTo(
-                        targetValue = selectedTab * slotWidthPx,
+                        targetValue = activeDrag,
                         animationSpec = spring(
-                            dampingRatio = 0.72f,
+                            dampingRatio = 0.85f,
+                            stiffness = 2_400f,
+                        ),
+                    )
+                } else {
+                    lensX.animateTo(
+                        targetValue = LiquidDockMath.offsetForTab(selectedTab, slotWidthPx, count),
+                        animationSpec = spring(
+                            dampingRatio = 0.76f,
                             stiffness = Spring.StiffnessMediumLow,
                         ),
                     )
                 }
             }
 
-            val activeDisplayTab = if (isDragging) previewTab else selectedTab
+            val activeDisplayTab = dragTargetOffsetPx?.let { offset ->
+                LiquidDockMath.nearestTabForOffset(offset, slotWidthPx, count)
+            } ?: selectedTab
+
             val lensScale by animateFloatAsState(
                 targetValue = if (isPressed || isDragging) 1.045f else 1f,
                 animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMedium),
@@ -412,74 +446,73 @@ private fun FloatingLiquidGlassDock(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(count, slotWidthPx) {
+                    .pointerInput(count) {
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
+                            val slotW = currentSlotWidthPx
+                            val insetPx = currentInnerInsetPx
+                            val session = DockGestureSession(
+                                downX = down.position.x,
+                                downY = down.position.y,
+                                initialSelectedTab = currentSelectedTab,
+                                slotWidthPx = slotW,
+                                innerInsetPx = insetPx,
+                                tabCount = count,
+                                touchSlopPx = viewConfiguration.touchSlop,
+                            )
+
                             isPressed = true
-                            val startPos = down.position
-                            var draggingHorizontally = false
-                            var cancelledByVerticalScroll = false
-                            var lastHoverTab = selectedTab
-                            var currentX = down.position.x
-
-                            while (true) {
-                                val event = awaitPointerEvent(PointerEventPass.Main)
-                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                if (!change.pressed) {
-                                    change.consume()
-                                    break
-                                }
-                                currentX = change.position.x
-                                val dx = currentX - startPos.x
-                                val dy = change.position.y - startPos.y
-
-                                if (!draggingHorizontally && abs(dy) > viewConfiguration.touchSlop * 1.4f && abs(dy) > abs(dx) * 1.3f) {
-                                    cancelledByVerticalScroll = true
-                                    break
-                                }
-
-                                if (!draggingHorizontally && abs(dx) > viewConfiguration.touchSlop * 0.6f && abs(dx) >= abs(dy)) {
-                                    draggingHorizontally = true
-                                    isDragging = true
-                                }
-
-                                if (draggingHorizontally) {
-                                    change.consume()
-                                    val maxOffset = (count - 1) * slotWidthPx
-                                    val targetOffset = (currentX - slotWidthPx / 2f).coerceIn(0f, maxOffset)
-                                    val nearest = (targetOffset / slotWidthPx).roundToInt().coerceIn(0, count - 1)
-                                    if (nearest != lastHoverTab) {
-                                        lastHoverTab = nearest
-                                        previewTab = nearest
-                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            var releaseX = down.position.x
+                            var releaseConsumed = false
+                            try {
+                                while (true) {
+                                    val event = awaitPointerEvent(PointerEventPass.Main)
+                                    val change = event.changes.firstOrNull { it.id == down.id }
+                                    if (change == null) {
+                                        session.onCancel()
+                                        break
                                     }
-                                    scope.launch {
-                                        lensX.snapTo(targetOffset)
+                                    releaseX = change.position.x
+                                    if (!change.pressed) {
+                                        releaseConsumed = change.isConsumed
+                                        if (!releaseConsumed) change.consume()
+                                        break
+                                    }
+
+                                    when (
+                                        val outcome = session.onMove(
+                                            x = change.position.x,
+                                            y = change.position.y,
+                                            consumedByOther = change.isConsumed,
+                                        )
+                                    ) {
+                                        DockGestureSession.MoveOutcome.Pending -> Unit
+                                        DockGestureSession.MoveOutcome.Cancelled -> break
+                                        is DockGestureSession.MoveOutcome.Dragging -> {
+                                            change.consume()
+                                            dragTargetOffsetPx = outcome.offsetPx
+                                            if (outcome.crossedTabBoundary) {
+                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                            }
+                                        }
                                     }
                                 }
-                            }
 
-                            isPressed = false
-                            val finalTab = when {
-                                cancelledByVerticalScroll -> selectedTab
-                                draggingHorizontally -> lastHoverTab
-                                else -> ((currentX / slotWidthPx).toInt()).coerceIn(0, count - 1)
-                            }
-                            isDragging = false
-                            if (!cancelledByVerticalScroll) {
-                                if (finalTab != selectedTab) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onSelectTab(finalTab)
-                                }
-                            }
-                            scope.launch {
-                                lensX.animateTo(
-                                    targetValue = finalTab * slotWidthPx,
-                                    animationSpec = spring(
-                                        dampingRatio = 0.72f,
-                                        stiffness = Spring.StiffnessMediumLow,
-                                    ),
+                                val release = session.onUp(
+                                    upX = releaseX,
+                                    consumedByOther = releaseConsumed,
+                                    latestSelectedTab = currentSelectedTab,
                                 )
+                                dragTargetOffsetPx = null
+                                isPressed = false
+
+                                if (release is DockGestureSession.ReleaseOutcome.Select && release.changed) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    currentOnSelectTab(release.tabIndex)
+                                }
+                            } finally {
+                                isPressed = false
+                                dragTargetOffsetPx = null
                             }
                         }
                     },
@@ -487,7 +520,7 @@ private fun FloatingLiquidGlassDock(
                 // Luminous frosted Liquid Glass capsule lens behind hovered/active tab
                 Box(
                     modifier = Modifier
-                        .offset { IntOffset((lensX.value + padPx).roundToInt(), 0) }
+                        .offset { IntOffset((lensX.value + innerInsetPx + padPx).roundToInt(), 0) }
                         .align(Alignment.CenterStart)
                         .width((slotWidth - 4.dp).coerceAtLeast(1.dp))
                         .height(54.dp)
@@ -527,7 +560,9 @@ private fun FloatingLiquidGlassDock(
                 )
 
                 Row(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = innerInsetDp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Tab.entries.forEach { item ->
@@ -551,16 +586,23 @@ private fun FloatingLiquidGlassDock(
                                 .weight(1f)
                                 .fillMaxHeight()
                                 .scale(contentScale)
-                                .semantics {
+                                .semantics(mergeDescendants = true) {
                                     role = Role.Tab
                                     this.selected = (selectedTab == item.ordinal)
+                                    contentDescription = item.label
+                                    onClick {
+                                        if (item.ordinal != currentSelectedTab) {
+                                            currentOnSelectTab(item.ordinal)
+                                        }
+                                        true
+                                    }
                                 },
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center,
                         ) {
                             Icon(
                                 imageVector = item.icon,
-                                contentDescription = item.label,
+                                contentDescription = null,
                                 tint = tint,
                                 modifier = Modifier.size(21.dp),
                             )

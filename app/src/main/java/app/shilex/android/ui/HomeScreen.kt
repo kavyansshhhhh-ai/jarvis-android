@@ -229,7 +229,7 @@ fun HomeScreen(
                 QuickActions(onQuick, favourites)
                 Spacer(Modifier.height(16.dp))
                 RecentActivitySnippet(activity.take(2), onSeeActivity)
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(16.dp))
             }
         }
 
@@ -238,7 +238,7 @@ fun HomeScreen(
             Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(top = 10.dp, bottom = 88.dp),
+                .padding(top = 10.dp, bottom = 94.dp),
             contentAlignment = Alignment.Center,
         ) {
             val live = now.live
@@ -428,7 +428,7 @@ private fun ChatConversation(lines: List<Line>, modifier: Modifier) {
     LazyColumn(
         modifier = modifier.padding(vertical = 4.dp),
         state = list,
-        contentPadding = PaddingValues(bottom = 8.dp),
+        contentPadding = PaddingValues(bottom = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         items(lines, key = { it.id }) { line ->

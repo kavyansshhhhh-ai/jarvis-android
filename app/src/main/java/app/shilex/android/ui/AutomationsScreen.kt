@@ -5,11 +5,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -98,7 +95,7 @@ fun AutomationsScreen() {
         Group("On this phone", "Works without internet and doesn't use your Gemini key.", ElectricCyan, "Local", LOCAL)
         Group("Tasks with your OK", "Gemini plans them; you finish anything that sends, calls or pays.", AmberWarning, "Needs you", TASKS)
         Group("With Gemini", "Needs internet; uses your Gemini key.", AmberWarning, "Gemini", CLOUD)
-        Spacer(Modifier.height(106.dp).navigationBarsPadding())
+        FloatingDockBottomSpacer()
     }
 }
 

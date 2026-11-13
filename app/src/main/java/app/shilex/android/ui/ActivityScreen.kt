@@ -88,7 +88,7 @@ fun ActivityScreen(entries: List<ActivityLog.Entry>, onClear: () -> Unit) {
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            contentPadding = PaddingValues(bottom = 108.dp),
+            contentPadding = PaddingValues(bottom = floatingDockContentBottomPadding()),
         ) {
             item {
                 GlassCard(modifier = Modifier.fillMaxWidth()) {
