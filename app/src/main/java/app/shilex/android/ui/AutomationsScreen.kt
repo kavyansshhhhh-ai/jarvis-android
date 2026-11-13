@@ -9,7 +9,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -74,10 +76,11 @@ fun AutomationsScreen() {
             .fillMaxSize()
             .background(OledBlack)
             .verticalScroll(rememberScrollState())
+            .statusBarsPadding()
             .padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        Column(Modifier.padding(top = 16.dp)) {
+        Column(Modifier.padding(top = 14.dp)) {
             Text(
                 "Automations",
                 style = MaterialTheme.typography.headlineSmall,
@@ -95,7 +98,7 @@ fun AutomationsScreen() {
         Group("On this phone", "Works without internet and doesn't use your Gemini key.", ElectricCyan, "Local", LOCAL)
         Group("Tasks with your OK", "Gemini plans them; you finish anything that sends, calls or pays.", AmberWarning, "Needs you", TASKS)
         Group("With Gemini", "Needs internet; uses your Gemini key.", AmberWarning, "Gemini", CLOUD)
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(106.dp).navigationBarsPadding())
     }
 }
 
@@ -111,7 +114,7 @@ private fun Routines() {
     }
 
     GlassCard(modifier = Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "Routines",
                 style = MaterialTheme.typography.titleLarge,
@@ -136,12 +139,7 @@ private fun Routines() {
                 }
             }
             if (idx < routines.lastIndex) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(0.6.dp)
-                        .background(Color(0x1AFFFFFF)),
-                )
+                GlassDivider()
             }
         }
     }
@@ -150,7 +148,7 @@ private fun Routines() {
 @Composable
 private fun Group(title: String, detail: String, color: Color, badge: String, commands: List<Command>) {
     GlassCard(modifier = Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 title,
                 style = MaterialTheme.typography.titleLarge,
@@ -164,12 +162,7 @@ private fun Group(title: String, detail: String, color: Color, badge: String, co
         commands.forEachIndexed { idx, cmd ->
             InfoRow(cmd.title, cmd.examples)
             if (idx < commands.lastIndex) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(0.6.dp)
-                        .background(Color(0x1AFFFFFF)),
-                )
+                GlassDivider()
             }
         }
     }

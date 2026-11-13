@@ -18,36 +18,37 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 // ==========================================
-// iOS Liquid Glass Colors - OLED Dark Palette
+// AMOLED Liquid Glass Palette (Frosted Dark)
 // ==========================================
 val OledBlack = Color(0xFF000000)
-val GlassSurface = Color(0x990E1524) // 60% translucent dark blue-black
-val GlassSurfaceVariant = Color(0xB3121C30) // 70% translucent
-val GlassSurfaceElevated = Color(0xCC162238) // 80% translucent
-val GlassSurfaceHighlight = Color(0x1FFFFFFF) // Specular top sheen
+val GlassSurface = Color(0xBF151519) // 75% smoked translucent obsidian glass
+val GlassSurfaceVariant = Color(0xCC1C1C22) // 80% elevated frosted card
+val GlassSurfaceElevated = Color(0xE0222229) // 88% modal / floating glass
+val GlassSurfaceHighlight = Color(0x28FFFFFF) // crisp specular rim sheen
 
 // Accents
 val ElectricCyan = Color(0xFF38E5FF)
-val DeepCyan = Color(0xFF0D3E4D)
+val DeepCyan = Color(0xFF0B3542)
 val NeonViolet = Color(0xFF9D65FF)
 val SoftPink = Color(0xFFF472B6)
 val AmberWarning = Color(0xFFFFB038)
 val CoralError = Color(0xFFFF6363)
-val SlateMuted = Color(0xFF94A3B8)
-val PureWhite = Color(0xFFF8FAFC)
+val SlateMuted = Color(0xFF9898A3)
+val PureWhite = Color(0xFFF9FAFB)
 
 // Glass Borders
-val GlassBorderColor = Color(0x2638E5FF) // subtle cyan edge
-val GlassBorderSubtle = Color(0x1FFFFFFF) // white glass rim
+val GlassBorderColor = Color(0x2BFFFFFF) // crisp frosted white rim
+val GlassBorderSubtle = Color(0x18FFFFFF) // subtle divider / edge
+val GlassDividerColor = Color(0x14FFFFFF)
 
 private val Dark = darkColorScheme(
     primary = ElectricCyan,
-    onPrimary = Color(0xFF001E26),
+    onPrimary = Color(0xFF001B22),
     primaryContainer = DeepCyan,
     onPrimaryContainer = Color(0xFFD0F7FF),
     secondary = NeonViolet,
     onSecondary = Color(0xFF1E0A40),
-    secondaryContainer = Color(0xFF311860),
+    secondaryContainer = Color(0xFF2B1654),
     tertiary = AmberWarning,
     background = OledBlack,
     onBackground = PureWhite,
@@ -55,18 +56,18 @@ private val Dark = darkColorScheme(
     onSurface = PureWhite,
     surfaceVariant = GlassSurfaceVariant,
     onSurfaceVariant = SlateMuted,
-    surfaceContainer = Color(0xE6080D17),
+    surfaceContainer = Color(0xE6101014),
     outline = GlassBorderSubtle,
     outlineVariant = GlassBorderColor,
     error = CoralError,
 )
 
-private val Light = Dark // Native JARVIS is designed for high-contrast OLED liquid glass dark experience
+private val Light = Dark // High-contrast AMOLED Liquid Glass dark experience
 
 private val Type = Typography(
     displaySmall = TextStyle(
-        fontSize = 32.sp,
-        lineHeight = 38.sp,
+        fontSize = 30.sp,
+        lineHeight = 36.sp,
         fontWeight = FontWeight.Bold,
         letterSpacing = (-0.6).sp,
         fontFamily = FontFamily.SansSerif,
@@ -74,28 +75,28 @@ private val Type = Typography(
     headlineSmall = TextStyle(
         fontSize = 24.sp,
         lineHeight = 30.sp,
-        fontWeight = FontWeight.SemiBold,
-        letterSpacing = (-0.3).sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = (-0.4).sp,
         fontFamily = FontFamily.SansSerif,
     ),
     titleLarge = TextStyle(
         fontSize = 20.sp,
         lineHeight = 26.sp,
         fontWeight = FontWeight.SemiBold,
-        letterSpacing = (-0.2).sp,
+        letterSpacing = (-0.3).sp,
         fontFamily = FontFamily.SansSerif,
     ),
     titleMedium = TextStyle(
-        fontSize = 16.sp,
-        lineHeight = 22.sp,
-        fontWeight = FontWeight.SemiBold,
+        fontSize = 15.5.sp,
+        lineHeight = 21.sp,
+        fontWeight = FontWeight.Medium,
         fontFamily = FontFamily.SansSerif,
     ),
     titleSmall = TextStyle(
         fontSize = 13.sp,
         lineHeight = 18.sp,
-        fontWeight = FontWeight.SemiBold,
-        letterSpacing = 0.5.sp,
+        fontWeight = FontWeight.Medium,
+        letterSpacing = 0.1.sp,
         fontFamily = FontFamily.SansSerif,
     ),
     bodyLarge = TextStyle(
@@ -111,8 +112,8 @@ private val Type = Typography(
         fontFamily = FontFamily.SansSerif,
     ),
     bodySmall = TextStyle(
-        fontSize = 12.sp,
-        lineHeight = 16.sp,
+        fontSize = 12.5.sp,
+        lineHeight = 17.sp,
         fontWeight = FontWeight.Normal,
         fontFamily = FontFamily.SansSerif,
     ),
@@ -126,19 +127,18 @@ private val Type = Typography(
         fontSize = 12.sp,
         lineHeight = 16.sp,
         fontWeight = FontWeight.Medium,
-        letterSpacing = 0.4.sp,
+        letterSpacing = 0.2.sp,
         fontFamily = FontFamily.SansSerif,
     ),
 )
 
-// iOS smooth squircle-like rounded corners
 private val Corners = Shapes(
-    small = RoundedCornerShape(12.dp),
-    medium = RoundedCornerShape(20.dp),
-    large = RoundedCornerShape(28.dp),
+    small = RoundedCornerShape(14.dp),
+    medium = RoundedCornerShape(22.dp),
+    large = RoundedCornerShape(30.dp),
 )
 
-/** Premium iOS Liquid Glass theme on deep OLED black. */
+/** AMOLED Liquid Glass theme on deep black. */
 @Composable
 fun ShilexTheme(content: @Composable () -> Unit) {
     MaterialTheme(
@@ -157,21 +157,38 @@ val Surface: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorSc
 val Muted: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onSurfaceVariant
 val Warning: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.tertiary
 
-// Gradient brushes for Liquid Glass effects
+// Smoked Frosted Liquid Glass Brushes
 val GlassBorderGradient: Brush
     get() = Brush.verticalGradient(
         listOf(
-            Color(0x66FFFFFF),
-            Color(0x3338E5FF),
-            Color(0x0DFFFFFF),
+            Color(0x47FFFFFF), // crisp top specular highlight
+            Color(0x1CFFFFFF),
+            Color(0x28FFFFFF), // subtle bottom glass refraction
         ),
     )
 
 val GlassSurfaceGradient: Brush
     get() = Brush.verticalGradient(
         listOf(
-            Color(0xB3152035),
-            Color(0x800C1322),
+            Color(0xCC1B1B20),
+            Color(0xB3121216),
+        ),
+    )
+
+val GlassDockSurfaceGradient: Brush
+    get() = Brush.verticalGradient(
+        listOf(
+            Color(0xB81D1D23),
+            Color(0xD6111115),
+        ),
+    )
+
+val GlassDockBorderGradient: Brush
+    get() = Brush.verticalGradient(
+        listOf(
+            Color(0x59FFFFFF),
+            Color(0x2138E5FF),
+            Color(0x30FFFFFF),
         ),
     )
 

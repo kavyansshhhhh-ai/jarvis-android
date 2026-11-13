@@ -33,27 +33,20 @@ import app.shilex.android.task.TaskState
 @Composable
 fun TaskCard(task: Task, modifier: Modifier = Modifier) {
     val (label, color) = stateLabel(task.state)
-    val shape = RoundedCornerShape(22.dp)
+    val shape = RoundedCornerShape(24.dp)
 
     Column(
         modifier
             .fillMaxWidth()
             .clip(shape)
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xD9141F38), // Translucent deep navy
-                        Color(0xB30E1626),
-                    ),
-                ),
-            )
+            .background(GlassSurfaceGradient)
             .border(
                 1.dp,
                 Brush.verticalGradient(
                     listOf(
-                        Color(0x40FFFFFF),
+                        Color(0x47FFFFFF),
                         color.copy(alpha = 0.35f),
-                        Color(0x0AFFFFFF),
+                        Color(0x18FFFFFF),
                     ),
                 ),
                 shape,

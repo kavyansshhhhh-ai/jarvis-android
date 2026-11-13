@@ -58,26 +58,20 @@ fun ControlCard(modifier: Modifier = Modifier, showWhenOn: Boolean = false) {
         return
     }
 
-    val shape = RoundedCornerShape(22.dp)
+    val shape = RoundedCornerShape(24.dp)
 
     Column(
         modifier
             .fillMaxWidth()
             .clip(shape)
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xB315243B),
-                        Color(0x800D1524),
-                    ),
-                ),
-            )
+            .background(GlassSurfaceGradient)
             .border(
                 1.dp,
                 Brush.verticalGradient(
                     listOf(
-                        Color(0x4D38E5FF),
-                        Color(0x1AFFFFFF),
+                        Color(0x47FFFFFF),
+                        Color(0x2838E5FF),
+                        Color(0x18FFFFFF),
                     ),
                 ),
                 shape,
@@ -102,7 +96,7 @@ fun ControlCard(modifier: Modifier = Modifier, showWhenOn: Boolean = false) {
                     containerColor = ElectricCyan,
                     contentColor = Color(0xFF001E26),
                 ),
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(50),
             ) { Text("Turn on", fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold) }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 TextButton(onClick = {

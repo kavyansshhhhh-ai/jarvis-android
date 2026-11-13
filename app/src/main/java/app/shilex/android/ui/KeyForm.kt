@@ -66,7 +66,7 @@ fun KeyForm(onSave: suspend (String) -> String?) {
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(18.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = ElectricCyan,
                 unfocusedBorderColor = Color(0x33FFFFFF),
@@ -95,7 +95,7 @@ fun KeyForm(onSave: suspend (String) -> String?) {
                     checking = false
                 }
             },
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(50),
             colors = ButtonDefaults.buttonColors(
                 containerColor = ElectricCyan,
                 contentColor = Color(0xFF001E26),

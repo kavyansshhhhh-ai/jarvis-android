@@ -11,17 +11,33 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -34,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -54,7 +71,7 @@ import app.shilex.android.wake.WakeState
 import app.shilex.android.wake.WakeWordModel
 
 /**
- * Premium iOS-style Liquid Glass Settings Screen.
+ * AMOLED Smoked Liquid Glass Settings Screen.
  */
 @Composable
 fun SettingsScreen(assistant: AssistantViewModel) {
@@ -127,10 +144,11 @@ fun SettingsScreen(assistant: AssistantViewModel) {
             .fillMaxSize()
             .background(OledBlack)
             .verticalScroll(rememberScrollState())
+            .statusBarsPadding()
             .padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        Column(Modifier.padding(top = 16.dp)) {
+        Column(Modifier.padding(top = 14.dp)) {
             Text(
                 "Settings",
                 style = MaterialTheme.typography.headlineSmall,
@@ -145,13 +163,75 @@ fun SettingsScreen(assistant: AssistantViewModel) {
             )
         }
 
+        // Top Assistant Identity Hero Card
+        GlassCard(shape = RoundedCornerShape(26.dp), verticalPadding = 14) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .shadow(10.dp, CircleShape, ambientColor = ElectricCyan, spotColor = NeonViolet)
+                        .clip(CircleShape)
+                        .background(
+                            Brush.linearGradient(
+                                listOf(
+                                    ElectricCyan.copy(alpha = 0.85f),
+                                    NeonViolet.copy(alpha = 0.85f),
+                                ),
+                            ),
+                        )
+                        .border(1.dp, Color(0x80FFFFFF), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = MicIcon,
+                        contentDescription = null,
+                        tint = Color(0xFF001A22),
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        Branding.ASSISTANT_NAME,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = PureWhite,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        if (wakeOn && micGranted) "Hands-free Wake Word • On-Phone & Gemini" else "Tap to Talk • On-Phone & Gemini",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Muted,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+                Pill(
+                    text = if (wakeOn && micGranted) "Active" else "Standby",
+                    color = if (wakeOn && micGranted) ElectricCyan else SlateMuted,
+                )
+            }
+        }
+
         Section("Gemini Intelligence") {
-            InfoRow("API key", "Your own key, encrypted with Android Keystore on this phone. Used only for requests the phone can't handle.") {
+            InfoRow(
+                "API key",
+                "Your own key, encrypted with Android Keystore on this phone. Used only for requests the phone can't handle.",
+                icon = Icons.Filled.Lock,
+                iconTint = ElectricCyan,
+            ) {
                 TextButton(onClick = assistant::forgetKey) {
                     Text("Replace", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
                 }
             }
-            InfoRow("Default assistant", "Long-press Home or swipe from a corner to talk.") {
+            GlassDivider()
+            InfoRow(
+                "Default assistant",
+                "Long-press Home or swipe from a corner to talk.",
+                icon = Icons.Filled.Phone,
+                iconTint = PureWhite,
+            ) {
                 TextButton(onClick = { open(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS) }) {
                     Text("Open", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
                 }
@@ -164,15 +244,18 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                 "Talk over ${Branding.ASSISTANT_NAME}",
                 "Speak while it answers to cut it off. An echo canceller on this phone removes its own voice first.",
                 talkOn,
+                icon = Icons.Filled.Phone,
             ) {
                 talkOn = it
                 assistant.talkOver = it
             }
+            GlassDivider()
             var waveOn by remember { mutableStateOf(assistant.waveToStop) }
             SwitchRow(
                 "Wave to interrupt",
                 "Wave a hand over the phone while ${Branding.ASSISTANT_NAME} speaks to cut it off instantly.",
                 waveOn,
+                icon = Icons.Filled.Star,
             ) {
                 waveOn = it
                 assistant.waveToStop = it
@@ -190,6 +273,7 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                 "Use ${Branding.ASSISTANT_NAME} over any app",
                 "A small orb floats over your apps. Tap to talk, double-tap to type, drag to move.",
                 orbOn,
+                icon = Icons.Filled.Star,
             ) { on ->
                 prefs.floatingOrb = on
                 orbOn = on && FloatingOrb.allowed(context)
@@ -214,6 +298,8 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                 (if (notifyOn) "On. " else "Off. ") +
                     "Ask \"what did I miss?\" and hear messages from people first. Notifications stay in memory on this " +
                     "phone; Gemini gets a short summary only when you ask, with codes hidden.",
+                icon = Icons.Filled.Notifications,
+                iconTint = if (notifyOn) ElectricCyan else SlateMuted,
             ) {
                 TextButton(onClick = { open(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS) }) {
                     Text(if (notifyOn) "Change" else "Turn on", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
@@ -227,6 +313,7 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                 "Hands-free voice activation without opening ${Branding.ASSISTANT_NAME} or tapping the mic.",
                 wakeOn && micGranted,
                 enabled = assistant.wakeWordAvailable,
+                icon = MicIcon,
             ) { on ->
                 if (on) {
                     requestWakePermissions()
@@ -234,14 +321,14 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                     assistant.setWakeWord(false)
                 }
             }
-
+            GlassDivider()
             InfoRow(
                 "Active phrase",
                 "Primary: \"${WakeWordModel.PHRASE}\" (also recognizes \"${WakeWordModel.ALT_PHRASE}\").",
             ) {
                 Pill(WakeWordModel.PHRASE, ElectricCyan, dot = false)
             }
-
+            GlassDivider()
             InfoRow(
                 "Microphone permission",
                 when {
@@ -258,12 +345,12 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                     }
                 }
             }
-
+            GlassDivider()
             val (statusLabel, statusDetail, statusColor) = wakeStatusUi(wakeOn, micGranted, wakeState)
             InfoRow("Background listening", statusDetail) {
                 Pill(statusLabel, statusColor)
             }
-
+            GlassDivider()
             SwitchRow(
                 "Wake activation dot",
                 "Shows a subtle ~${dotSize.coreDiameterDp}dp top-center Liquid Glass dot for ${formatSeconds(dotDurationMs)} only when \"${WakeWordModel.PHRASE}\" triggers.",
@@ -274,6 +361,7 @@ fun SettingsScreen(assistant: AssistantViewModel) {
             }
 
             if (dotOn) {
+                GlassDivider()
                 OptionChoiceRow(
                     title = "Dot size",
                     detail = "Core dot & Liquid Glass glow (default Standard 12dp).",
@@ -284,7 +372,7 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                         assistant.wakeDotSize = chosen
                     },
                 )
-
+                GlassDivider()
                 OptionChoiceRow(
                     title = "Display duration",
                     detail = "How long the dot fades in, pulses, and fades out (default 2.8s).",
@@ -295,7 +383,7 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                         assistant.wakeDotDurationMs = chosenMs
                     },
                 )
-
+                GlassDivider()
                 InfoRow(
                     "Dot over other apps",
                     if (overlayAllowed) {
@@ -321,12 +409,14 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                 }
             }
 
+            GlassDivider()
             InfoRow(
                 "Battery & microphone usage",
                 "Processed 100% offline on this phone. A quiet-room sound gate sleeps the speech decoder when idle to minimize CPU and battery. No continuous audio is saved or sent to Gemini until \"${WakeWordModel.PHRASE}\" is detected, and a visible notification remains active.",
             )
 
             if (assistant.wakeOnnxAvailable && micGranted) {
+                GlassDivider()
                 VoiceSetupRow(
                     saved = assistant.voiceSaved,
                     record = assistant::recordVoiceSample,
@@ -341,10 +431,12 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                 "Handle simple commands on phone",
                 "Volume, music, flashlight, apps, time, timers and alarms run here, without Gemini.",
                 localOn,
+                icon = Icons.Filled.Build,
             ) {
                 localOn = it
                 assistant.localCommands = it
             }
+            GlassDivider()
             SwitchRow(
                 "Use phone speech service",
                 "Better Hinglish, with offline fallbacks.",
@@ -355,6 +447,7 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                 assistant.networkSpeech = it
                 engine = assistant.speechEngine
             }
+            GlassDivider()
             InfoRow("Speech heard by", engineText(engine))
         }
 
@@ -365,10 +458,12 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                 "Learn from how I use ${Branding.ASSISTANT_NAME}",
                 "Kept only on this phone: which commands you use and when, and your phrases once understood.",
                 learnOn,
+                icon = Icons.Filled.Settings,
             ) {
                 learnOn = it
                 assistant.learning = it
             }
+            GlassDivider()
             InfoRow("What it knows", learned) {
                 TextButton(onClick = {
                     assistant.forgetLearned()
@@ -378,7 +473,8 @@ fun SettingsScreen(assistant: AssistantViewModel) {
         }
 
         Section("Permissions & Safety") {
-            ControlCard(Modifier.padding(vertical = 4.dp), showWhenOn = true)
+            ControlCard(Modifier.padding(vertical = 6.dp), showWhenOn = true)
+            GlassDivider()
             InfoRow(
                 "Background running",
                 if (batteryExempt) "Allowed. Battery saver will not interrupt wake word." else "Allow under Battery → Unrestricted so the wake word runs smoothly in background.",
@@ -393,8 +489,12 @@ fun SettingsScreen(assistant: AssistantViewModel) {
             InfoRow(
                 "What leaves the phone",
                 "The wake word and local commands stay on this phone. Gemini receives only requests the phone cannot resolve locally. Diagnostic logs never store audio.",
+                icon = Icons.Filled.Lock,
+                iconTint = ElectricCyan,
             )
+            GlassDivider()
             InfoRow("Standby", "Between requests only the wake word runs; Gemini is completely disconnected.")
+            GlassDivider()
             val memory = remember { MemoryStore(context) }
             var notes by remember { mutableStateOf(memory.notes().size) }
             LifecycleResumeEffect(Unit) {
@@ -414,13 +514,18 @@ fun SettingsScreen(assistant: AssistantViewModel) {
         }
 
         Section("About") {
-            InfoRow(Branding.ASSISTANT_NAME, "Version ${versionName(context)} • GNU GPL v3.0")
+            InfoRow(
+                Branding.ASSISTANT_NAME,
+                "Version ${versionName(context)} • GNU GPL v3.0",
+                icon = Icons.Filled.Info,
+                iconTint = Muted,
+            )
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(106.dp).navigationBarsPadding())
     }
 }
 
-private fun wakeStatusUi(wakeOn: Boolean, micGranted: Boolean, state: WakeState): Triple<String, String, androidx.compose.ui.graphics.Color> = when {
+private fun wakeStatusUi(wakeOn: Boolean, micGranted: Boolean, state: WakeState): Triple<String, String, Color> = when {
     !micGranted && wakeOn -> Triple("Blocked", "Waiting for microphone permission.", CoralError)
     !wakeOn -> Triple("Off", "Turn on wake word above to listen hands-free.", SlateMuted)
     state == WakeState.Listening -> Triple("Active", "Listening offline in background for \"${WakeWordModel.PHRASE}\".", ElectricCyan)
@@ -454,7 +559,7 @@ private fun <T> OptionChoiceRow(
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 10.dp),
+            .padding(vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(title, style = MaterialTheme.typography.titleMedium, color = PureWhite)
@@ -465,24 +570,29 @@ private fun <T> OptionChoiceRow(
         ) {
             options.forEach { (value, label) ->
                 val isSelected = value == selected
-                val shape = RoundedCornerShape(14.dp)
+                val shape = RoundedCornerShape(50)
+                val interaction = remember { MutableInteractionSource() }
                 Row(
                     modifier = Modifier
                         .weight(1f)
+                        .glassPressScale(interaction)
                         .clip(shape)
                         .background(
                             if (isSelected) {
                                 Brush.horizontalGradient(listOf(ElectricCyan.copy(alpha = 0.22f), NeonViolet.copy(alpha = 0.16f)))
                             } else {
-                                Brush.horizontalGradient(listOf(Color(0x14FFFFFF), Color(0x0DFFFFFF)))
+                                Brush.horizontalGradient(listOf(Color(0x16FFFFFF), Color(0x0CFFFFFF)))
                             },
                         )
                         .border(
-                            1.dp,
-                            if (isSelected) ElectricCyan.copy(alpha = 0.65f) else Color(0x22FFFFFF),
+                            0.9.dp,
+                            if (isSelected) ElectricCyan.copy(alpha = 0.65f) else Color(0x26FFFFFF),
                             shape,
                         )
-                        .clickable { onSelect(value) }
+                        .clickable(
+                            interactionSource = interaction,
+                            indication = null,
+                        ) { onSelect(value) }
                         .padding(horizontal = 8.dp, vertical = 9.dp),
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically,
@@ -492,6 +602,7 @@ private fun <T> OptionChoiceRow(
                         style = MaterialTheme.typography.labelMedium,
                         color = if (isSelected) ElectricCyan else Muted,
                         fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1,
                     )
                 }
             }

@@ -5,9 +5,10 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,18 +16,23 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
@@ -83,7 +89,7 @@ private fun status(state: UiState, local: LocalPhase, wakeOn: Boolean): Status =
 }
 
 /**
- * Premium iOS Liquid Glass Home Screen for JARVIS.
+ * AMOLED Liquid Glass Home Screen for JARVIS.
  */
 @Composable
 fun HomeScreen(
@@ -116,18 +122,21 @@ fun HomeScreen(
     }
     val now = status(state, localPhase, wakeOn)
     val problem = state.problem != null && !now.live
+    val inConversation = state.phase != Phase.Off && state.lines.isNotEmpty()
+    val recentTask = task?.takeIf { now.live || System.currentTimeMillis() - it.at < TASK_SHOWN_MS }
 
     Column(
         Modifier
             .fillMaxSize()
             .background(OledBlack)
+            .statusBarsPadding()
             .padding(horizontal = 20.dp),
     ) {
-        // Floating Top Glass Bar
+        // Floating Top Liquid Glass Header Bar
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(top = 14.dp, bottom = 4.dp),
+                .padding(top = 12.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(
@@ -144,85 +153,104 @@ fun HomeScreen(
                 Box(
                     modifier = Modifier
                         .padding(start = 8.dp)
-                        .size(6.dp)
-                        .background(if (now.live) ElectricCyan else Color(0x33FFFFFF), CircleShape),
+                        .size(7.dp)
+                        .background(if (now.live) ElectricCyan else Color(0x38FFFFFF), CircleShape)
+                        .then(
+                            if (now.live) {
+                                Modifier.shadow(4.dp, CircleShape, ambientColor = ElectricCyan, spotColor = ElectricCyan)
+                            } else {
+                                Modifier
+                            },
+                        ),
                 )
             }
             Pill(now.badge, if (now.live) ElectricCyan else Muted)
         }
 
-        // Central Liquid Glass AI Orb
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            contentAlignment = Alignment.Center,
-        ) {
-            Orb(
-                phase = now.orb,
-                level = level,
-                modifier = Modifier
-                    .size(240.dp)
-                    .semantics { contentDescription = "${Branding.ASSISTANT_NAME}: ${now.title}" }
-                    .clickable(remember { MutableInteractionSource() }, indication = null) {
-                        when (state.phase) {
-                            Phase.Off -> if (localPhase == LocalPhase.Idle) startListening()
-                            Phase.Speaking -> onInterrupt()
-                            else -> Unit
-                        }
-                    },
-            )
-        }
+        if (inConversation) {
+            // Conversation mode: compact Orb + live chat scroll
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Orb(
+                    phase = now.orb,
+                    level = level,
+                    modifier = Modifier
+                        .size(164.dp)
+                        .semantics { contentDescription = "${Branding.ASSISTANT_NAME}: ${now.title}" }
+                        .clickable(remember { MutableInteractionSource() }, indication = null) {
+                            when (state.phase) {
+                                Phase.Off -> if (localPhase == LocalPhase.Idle) startListening()
+                                Phase.Speaking -> onInterrupt()
+                                else -> Unit
+                            }
+                        },
+                )
+            }
 
-        // Status Title & Subtitle with smooth transitions
-        AnimatedContent(now.title, label = "statusTitle") { title ->
-            Text(
-                title,
-                style = MaterialTheme.typography.displaySmall,
-                color = PureWhite,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        Text(
-            now.hint,
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (problem) CoralError else Muted,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp, bottom = 14.dp),
-        )
-
-        // Recent Task in Progress
-        val recentTask = task?.takeIf { now.live || System.currentTimeMillis() - it.at < TASK_SHOWN_MS }
-        recentTask?.let {
-            TaskCard(it, Modifier.padding(bottom = 12.dp))
-        }
-
-        // ChatGPT-Style Conversation or Quick Actions
-        if (state.phase != Phase.Off && state.lines.isNotEmpty()) {
+            StatusHeader(now, problem)
+            recentTask?.let { TaskCard(it, Modifier.padding(bottom = 12.dp)) }
             ChatConversation(state.lines, Modifier.fillMaxWidth().weight(1f))
         } else {
-            QuickActions(onQuick, favourites)
-            Spacer(Modifier.height(14.dp))
-            RecentActivitySnippet(activity.take(2), onSeeActivity)
+            // Standby / Quick action mode with smooth scrolling above floating capsule nav bar
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 18.dp, bottom = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Orb(
+                        phase = now.orb,
+                        level = level,
+                        modifier = Modifier
+                            .size(226.dp)
+                            .semantics { contentDescription = "${Branding.ASSISTANT_NAME}: ${now.title}" }
+                            .clickable(remember { MutableInteractionSource() }, indication = null) {
+                                when (state.phase) {
+                                    Phase.Off -> if (localPhase == LocalPhase.Idle) startListening()
+                                    Phase.Speaking -> onInterrupt()
+                                    else -> Unit
+                                }
+                            },
+                    )
+                }
+
+                StatusHeader(now, problem)
+                recentTask?.let { TaskCard(it, Modifier.padding(bottom = 12.dp)) }
+                QuickActions(onQuick, favourites)
+                Spacer(Modifier.height(16.dp))
+                RecentActivitySnippet(activity.take(2), onSeeActivity)
+                Spacer(Modifier.height(10.dp))
+            }
         }
 
-        // Floating Liquid Glass Action Button (Mic / Stop)
+        // Floating Liquid Glass Action Button (Mic / Stop), anchored clearly above floating bottom capsule dock
         Box(
             Modifier
                 .fillMaxWidth()
-                .padding(vertical = 16.dp),
+                .navigationBarsPadding()
+                .padding(top = 10.dp, bottom = 88.dp),
             contentAlignment = Alignment.Center,
         ) {
             val live = now.live
             val buttonShape = CircleShape
+            val micInteraction = remember { MutableInteractionSource() }
 
             Box(
                 modifier = Modifier
-                    .size(76.dp)
+                    .glassPressScale(micInteraction)
+                    .size(72.dp)
                     .shadow(
-                        elevation = if (live) 18.dp else 10.dp,
+                        elevation = if (live) 20.dp else 12.dp,
                         shape = buttonShape,
                         ambientColor = if (live) CoralError else ElectricCyan,
                         spotColor = if (live) CoralError else ElectricCyan,
@@ -246,30 +274,58 @@ fun HomeScreen(
                         },
                     )
                     .border(
-                        1.5.dp,
+                        1.2.dp,
                         Brush.verticalGradient(
                             listOf(
-                                Color(0x99FFFFFF),
+                                Color(0xAAFFFFFF),
                                 Color(0x33FFFFFF),
                             ),
                         ),
                         buttonShape,
                     )
-                    .clickable { if (live) onStop() else startListening() },
+                    .clickable(
+                        interactionSource = micInteraction,
+                        indication = null,
+                    ) { if (live) onStop() else startListening() },
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     imageVector = if (live) Icons.Filled.Close else MicIcon,
                     contentDescription = if (live) "Stop" else "Talk",
                     tint = if (live) PureWhite else Color(0xFF001E26),
-                    modifier = Modifier.size(32.dp),
+                    modifier = Modifier.size(30.dp),
                 )
             }
         }
     }
 }
 
-/** One-tap phone actions with frosted glass styling. */
+@Composable
+private fun StatusHeader(now: Status, problem: Boolean) {
+    AnimatedContent(
+        targetState = now.title,
+        transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(150)) },
+        label = "statusTitle",
+    ) { title ->
+        Text(
+            title,
+            style = MaterialTheme.typography.displaySmall,
+            color = PureWhite,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+    Text(
+        now.hint,
+        style = MaterialTheme.typography.bodyMedium,
+        color = if (problem) CoralError else Muted,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, bottom = 14.dp),
+    )
+}
+
+/** One-tap phone actions styled as frosted smoked-glass capsule pills with spring press feedback. */
 @Composable
 private fun QuickActions(onQuick: (LocalCommand) -> String, favourites: List<LocalCommand>) {
     var torchOn by remember { mutableStateOf(false) }
@@ -289,32 +345,20 @@ private fun QuickActions(onQuick: (LocalCommand) -> String, favourites: List<Loc
     Column {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             actions.forEach { (label, command) ->
-                val shape = RoundedCornerShape(14.dp)
+                val shape = RoundedCornerShape(50)
+                val interaction = remember { MutableInteractionSource() }
                 Box(
                     Modifier
                         .weight(1f)
+                        .glassPressScale(interaction)
                         .clip(shape)
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color(0x99141E34),
-                                    Color(0x660D1424),
-                                ),
-                            ),
-                        )
-                        .border(
-                            1.dp,
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color(0x33FFFFFF),
-                                    Color(0x1A38E5FF),
-                                    Color(0x08FFFFFF),
-                                ),
-                            ),
-                            shape,
-                        )
-                        .clickable { answer = onQuick(command()) }
-                        .padding(vertical = 13.dp),
+                        .background(GlassSurfaceGradient)
+                        .border(0.9.dp, GlassBorderGradient, shape)
+                        .clickable(
+                            interactionSource = interaction,
+                            indication = null,
+                        ) { answer = onQuick(command()) }
+                        .padding(vertical = 12.dp, horizontal = 6.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -332,50 +376,49 @@ private fun QuickActions(onQuick: (LocalCommand) -> String, favourites: List<Loc
                 it,
                 style = MaterialTheme.typography.bodySmall,
                 color = ElectricCyan,
-                modifier = Modifier.padding(top = 8.dp, start = 4.dp),
+                modifier = Modifier.padding(top = 10.dp, start = 6.dp),
             )
         }
     }
 }
 
-/** Recent activity with iOS glass card layout. */
+/** Recent activity snippet with smoked frosted Liquid Glass card. */
 @Composable
 private fun RecentActivitySnippet(entries: List<ActivityLog.Entry>, onSeeAll: () -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(
-            "RECENT ACTIVITY",
+            "Recent activity",
             style = MaterialTheme.typography.titleSmall,
             color = Muted,
-            letterSpacing = 0.8.sp,
-            modifier = Modifier.weight(1f).padding(start = 4.dp),
+            fontSize = 13.5.sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = 0.15.sp,
+            modifier = Modifier.weight(1f).padding(start = 6.dp),
         )
-        TextButton(onClick = onSeeAll) { Text("See all", color = ElectricCyan, fontWeight = FontWeight.SemiBold) }
+        TextButton(onClick = onSeeAll) {
+            Text("See all", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
+        }
     }
     if (entries.isEmpty()) {
         Text(
             "Nothing yet. What you ask shows up here.",
             style = MaterialTheme.typography.bodySmall,
             color = Muted,
-            modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+            modifier = Modifier.padding(start = 6.dp, top = 2.dp),
         )
     } else {
         GlassCard(modifier = Modifier.fillMaxWidth()) {
             entries.forEachIndexed { idx, entry ->
                 ActivityRow(entry)
                 if (idx < entries.lastIndex) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(0.6.dp)
-                            .background(Color(0x1FFFFFFF)),
-                    )
+                    GlassDivider()
                 }
             }
         }
     }
 }
 
-/** Modern ChatGPT-style conversation view with frosted glass message bubbles. */
+/** Modern conversation stream with smoked frosted glass AI bubbles. */
 @Composable
 private fun ChatConversation(lines: List<Line>, modifier: Modifier) {
     val list = rememberLazyListState()
@@ -385,6 +428,7 @@ private fun ChatConversation(lines: List<Line>, modifier: Modifier) {
     LazyColumn(
         modifier = modifier.padding(vertical = 4.dp),
         state = list,
+        contentPadding = PaddingValues(bottom = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         items(lines, key = { it.id }) { line ->
@@ -393,8 +437,7 @@ private fun ChatConversation(lines: List<Line>, modifier: Modifier) {
                 contentAlignment = if (line.fromUser) Alignment.CenterEnd else Alignment.CenterStart,
             ) {
                 if (line.fromUser) {
-                    // User prompt bubble: electric cyan with violet tint
-                    val userShape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp)
+                    val userShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp)
                     Box(
                         Modifier
                             .clip(userShape)
@@ -406,11 +449,7 @@ private fun ChatConversation(lines: List<Line>, modifier: Modifier) {
                                     ),
                                 ),
                             )
-                            .border(
-                                1.dp,
-                                Color(0x66FFFFFF),
-                                userShape,
-                            )
+                            .border(1.dp, Color(0x66FFFFFF), userShape)
                             .padding(horizontal = 15.dp, vertical = 10.dp),
                     ) {
                         Text(
@@ -421,29 +460,12 @@ private fun ChatConversation(lines: List<Line>, modifier: Modifier) {
                         )
                     }
                 } else {
-                    // Assistant response bubble: translucent dark glass with specular rim
-                    val aiShape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 4.dp, bottomEnd = 18.dp)
+                    val aiShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 6.dp, bottomEnd = 20.dp)
                     Box(
                         Modifier
                             .clip(aiShape)
-                            .background(
-                                Brush.verticalGradient(
-                                    listOf(
-                                        Color(0xD9121D33),
-                                        Color(0xBF0B1220),
-                                    ),
-                                ),
-                            )
-                            .border(
-                                1.dp,
-                                Brush.verticalGradient(
-                                    listOf(
-                                        Color(0x40FFFFFF),
-                                        Color(0x2638E5FF),
-                                    ),
-                                ),
-                                aiShape,
-                            )
+                            .background(GlassSurfaceGradient)
+                            .border(1.dp, GlassBorderGradient, aiShape)
                             .padding(horizontal = 15.dp, vertical = 10.dp),
                     ) {
                         Text(

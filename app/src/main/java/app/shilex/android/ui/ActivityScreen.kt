@@ -3,22 +3,23 @@ package app.shilex.android.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -34,12 +35,13 @@ fun ActivityScreen(entries: List<ActivityLog.Entry>, onClear: () -> Unit) {
         Modifier
             .fillMaxSize()
             .background(OledBlack)
+            .statusBarsPadding()
             .padding(horizontal = 20.dp),
     ) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(top = 16.dp, bottom = 4.dp),
+                .padding(top = 14.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -66,36 +68,39 @@ fun ActivityScreen(entries: List<ActivityLog.Entry>, onClear: () -> Unit) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .weight(1f)
+                    .navigationBarsPadding()
+                    .padding(bottom = 96.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    "Nothing yet. What you ask shows up here.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Muted,
-                )
+                GlassCard(horizontalPadding = 24, verticalPadding = 20) {
+                    Text(
+                        "Nothing yet. What you ask shows up here.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Muted,
+                    )
+                }
             }
             return
         }
 
-        GlassCard(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
+            contentPadding = PaddingValues(bottom = 108.dp),
         ) {
-            LazyColumn {
-                items(entries, key = { it.at.toString() + it.what }) { entry ->
-                    ActivityRow(entry)
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(0.6.dp)
-                            .background(Color(0x1AFFFFFF)),
-                    )
+            item {
+                GlassCard(modifier = Modifier.fillMaxWidth()) {
+                    entries.forEachIndexed { idx, entry ->
+                        ActivityRow(entry)
+                        if (idx < entries.lastIndex) {
+                            GlassDivider()
+                        }
+                    }
                 }
             }
         }
-        Spacer(Modifier.height(16.dp))
     }
 }
 
@@ -104,7 +109,7 @@ fun ActivityRow(entry: ActivityLog.Entry) {
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 12.dp, horizontal = 4.dp),
+            .padding(vertical = 12.dp, horizontal = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {

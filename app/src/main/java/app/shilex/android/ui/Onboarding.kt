@@ -191,9 +191,11 @@ private fun Page(title: String, detail: String, content: @Composable ColumnScope
 
 @Composable
 private fun Primary(label: String, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(16.dp)
+    val shape = RoundedCornerShape(50)
+    val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Button(
         onClick = onClick,
+        interactionSource = interaction,
         shape = shape,
         colors = ButtonDefaults.buttonColors(
             containerColor = ElectricCyan,
@@ -202,6 +204,7 @@ private fun Primary(label: String, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .height(54.dp)
+            .glassPressScale(interaction)
             .shadow(
                 elevation = 8.dp,
                 shape = shape,
