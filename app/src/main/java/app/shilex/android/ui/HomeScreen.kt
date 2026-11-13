@@ -1,7 +1,6 @@
 package app.shilex.android.ui
 
 import android.Manifest
-import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -67,6 +66,8 @@ import app.shilex.android.local.ActivityLog
 import app.shilex.android.local.LocalCommand
 import app.shilex.android.local.LocalPhase
 import app.shilex.android.local.MediaKey
+import app.shilex.android.permissions.PermissionId
+import app.shilex.android.permissions.PermissionRegistry
 import app.shilex.android.task.Task
 import app.shilex.android.wake.WakeWordModel
 
@@ -114,11 +115,19 @@ fun HomeScreen(
     }
     val askForTool = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission(), onPermissionAnswered)
     LaunchedEffect(state.permissionNeeded) {
-        state.permissionNeeded?.let(askForTool::launch)
+        state.permissionNeeded?.let { permission ->
+            PermissionRegistry.markRequested(context, permission)
+            askForTool.launch(permission)
+        }
     }
     val startListening = {
-        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        if (granted) onStart() else askMic.launch(Manifest.permission.RECORD_AUDIO)
+        val granted = PermissionRegistry.isGrantedNow(context, PermissionId.Microphone)
+        if (granted) {
+            onStart()
+        } else {
+            PermissionRegistry.markRequested(context, Manifest.permission.RECORD_AUDIO)
+            askMic.launch(Manifest.permission.RECORD_AUDIO)
+        }
     }
     val now = status(state, localPhase, wakeOn)
     val problem = state.problem != null && !now.live

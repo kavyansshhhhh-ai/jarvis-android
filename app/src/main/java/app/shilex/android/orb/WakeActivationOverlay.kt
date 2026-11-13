@@ -28,6 +28,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import app.shilex.android.control.ControlService
 import app.shilex.android.data.Settings
 import app.shilex.android.ui.ElectricCyan
@@ -60,7 +61,7 @@ object WakeActivationOverlay {
             if (!wakeState.visible) return@post
 
             val settings = Settings(app)
-            val dotSize = WakeDotSize.fromKey(settings.wakeDotSize)
+            val dotSize = WakeDotSize.fromDp(settings.wakeDotSizeDp)
             val durationMs = WakeIndicatorController.clampDurationMs(wakeState.durationMs)
             val cleanupMs = WakeIndicatorController.cleanupDelayMs(durationMs)
 
@@ -185,39 +186,69 @@ fun TinyWakeDot(
     )
 
     Canvas(modifier = modifier.size(dotSize.canvasDp.dp)) {
-        val a = alpha.value
-        if (a <= 0.01f) return@Canvas
-        val coreRadius = (dotSize.coreDiameterDp / 2f).dp.toPx() * (0.96f + 0.08f * (pulse - 0.90f) / 0.22f)
-        val glowRadius = (dotSize.glowDiameterDp / 2f).dp.toPx() * pulse
-
-        // Soft cyan-violet Liquid Glass halo (~22dp overall default)
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    ElectricCyan.copy(alpha = 0.60f * a),
-                    NeonViolet.copy(alpha = 0.34f * a),
-                    Color.Transparent,
-                ),
-                center = center,
-                radius = glowRadius,
-            ),
-            radius = glowRadius,
-            center = center,
-        )
-
-        // Luminous Liquid Glass dot core (~12dp visible diameter default)
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = 0.98f * a),
-                    ElectricCyan.copy(alpha = 0.96f * a),
-                    NeonViolet.copy(alpha = 0.92f * a),
-                ),
-                center = Offset(center.x - coreRadius * 0.26f, center.y - coreRadius * 0.26f),
-                radius = coreRadius * 1.32f,
-            ),
-            radius = coreRadius,
-            center = center,
-        )
+        drawWakeDot(alpha = alpha.value, pulse = pulse, dotSize = dotSize)
     }
+}
+
+/**
+ * Continuous live preview of [TinyWakeDot] using identical proportional core, glow, and canvas scaling
+ * so adjusting the Settings slider reflects real wake-dot appearance immediately.
+ */
+@Composable
+fun TinyWakeDotPreview(
+    dotSize: WakeDotSize,
+    modifier: Modifier = Modifier,
+) {
+    val pulse by rememberInfiniteTransition(label = "wakeDotPreviewPulse").animateFloat(
+        initialValue = 0.92f,
+        targetValue = 1.10f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 680, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "previewPulse",
+    )
+    Canvas(modifier = modifier.size(dotSize.canvasDp.dp)) {
+        drawWakeDot(alpha = 1f, pulse = pulse, dotSize = dotSize)
+    }
+}
+
+private fun DrawScope.drawWakeDot(
+    alpha: Float,
+    pulse: Float,
+    dotSize: WakeDotSize,
+) {
+    if (alpha <= 0.01f) return
+    val coreRadius = (dotSize.coreDiameterDp / 2f).dp.toPx() * (0.96f + 0.08f * (pulse - 0.90f) / 0.22f)
+    val glowRadius = (dotSize.glowDiameterDp / 2f).dp.toPx() * pulse
+
+    // Soft cyan-violet Liquid Glass halo scaling proportionally with core diameter
+    drawCircle(
+        brush = Brush.radialGradient(
+            colors = listOf(
+                ElectricCyan.copy(alpha = 0.60f * alpha),
+                NeonViolet.copy(alpha = 0.34f * alpha),
+                Color.Transparent,
+            ),
+            center = center,
+            radius = glowRadius,
+        ),
+        radius = glowRadius,
+        center = center,
+    )
+
+    // Luminous Liquid Glass dot core
+    drawCircle(
+        brush = Brush.radialGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.98f * alpha),
+                ElectricCyan.copy(alpha = 0.96f * alpha),
+                NeonViolet.copy(alpha = 0.92f * alpha),
+            ),
+            center = Offset(center.x - coreRadius * 0.26f, center.y - coreRadius * 0.26f),
+            radius = coreRadius * 1.32f,
+        ),
+        radius = coreRadius,
+        center = center,
+    )
 }

@@ -4,27 +4,76 @@ import app.shilex.android.control.ControlRules
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlin.math.max
+import kotlin.math.roundToInt
 
-enum class WakeDotSize(
-    val key: String,
-    val label: String,
+/**
+ * Wake activation dot size (9dp–50dp continuous core diameter) with proportional halo & canvas.
+ * Preserves compatibility with legacy preset keys ("small", "standard", "large", "dp22", ...).
+ */
+@ConsistentCopyVisibility
+data class WakeDotSize private constructor(
     val coreDiameterDp: Int,
-    val glowDiameterDp: Int,
 ) {
-    Small("small", "9dp", coreDiameterDp = 9, glowDiameterDp = 18),
-    Standard("standard", "12dp", coreDiameterDp = 12, glowDiameterDp = 22),
-    Large("large", "16dp", coreDiameterDp = 16, glowDiameterDp = 28),
-    MediumLarge("dp22", "22dp", coreDiameterDp = 22, glowDiameterDp = 36),
-    Prominent("dp30", "30dp", coreDiameterDp = 30, glowDiameterDp = 46),
-    ExtraLarge("dp40", "40dp", coreDiameterDp = 40, glowDiameterDp = 60),
-    Max("dp50", "50dp", coreDiameterDp = 50, glowDiameterDp = 74),
-    ;
+    val key: String get() = "dp$coreDiameterDp"
+    val label: String get() = "${coreDiameterDp}dp"
 
-    /** Canvas width/height with headroom for gentle radial halo pulse without clipping. */
-    val canvasDp: Int get() = glowDiameterDp + 10
+    /** Soft radial halo scales proportionally with the core dot diameter (9dp->18dp, 12dp->22dp, 50dp->74dp). */
+    val glowDiameterDp: Int get() = (coreDiameterDp * 1.38f + 5.4f).roundToInt()
+
+    /** Canvas width/height with headroom for 1.12x radial halo pulse without clipping at any size. */
+    val canvasDp: Int get() = glowDiameterDp + max(10, (coreDiameterDp * 0.25f).roundToInt())
 
     companion object {
-        fun fromKey(key: String?): WakeDotSize = entries.firstOrNull { it.key == key } ?: Standard
+        const val MIN_DP = 9
+        const val MAX_DP = 50
+        const val DEFAULT_DP = 12
+
+        val Small = WakeDotSize(9)
+        val Standard = WakeDotSize(12)
+        val Large = WakeDotSize(16)
+        val MediumLarge = WakeDotSize(22)
+        val Prominent = WakeDotSize(30)
+        val ExtraLarge = WakeDotSize(40)
+        val Max = WakeDotSize(50)
+
+        val entries: List<WakeDotSize> = listOf(
+            Small,
+            Standard,
+            Large,
+            MediumLarge,
+            Prominent,
+            ExtraLarge,
+            Max,
+        )
+
+        fun clampDp(dp: Int): Int = dp.coerceIn(MIN_DP, MAX_DP)
+
+        fun clampFloat(value: Float): Float = value.coerceIn(MIN_DP.toFloat(), MAX_DP.toFloat())
+
+        fun fromDp(dp: Int): WakeDotSize = WakeDotSize(clampDp(dp))
+
+        fun fromSlider(value: Float): WakeDotSize =
+            if (value.isNaN()) Standard else WakeDotSize(clampDp(value.roundToInt()))
+
+        fun fromKey(key: String?): WakeDotSize = when (key?.trim()?.lowercase()) {
+            null, "" -> Standard
+            "small" -> Small
+            "standard" -> Standard
+            "large" -> Large
+            else -> {
+                val numeric = key.trim().lowercase()
+                    .removePrefix("dp")
+                    .removeSuffix("dp")
+                    .trim()
+                    .toFloatOrNull()
+                if (numeric != null && !numeric.isNaN()) {
+                    WakeDotSize(clampDp(numeric.roundToInt()))
+                } else {
+                    Standard
+                }
+            }
+        }
     }
 }
 

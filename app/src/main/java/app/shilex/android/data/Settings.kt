@@ -47,10 +47,31 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("wake_indicator", true)
         set(value) = prefs.edit().putBoolean("wake_indicator", value).apply()
 
-    /** Visible size preset for the wake dot ("small", "standard", "large"). Default: standard (~12dp). */
+    /** Visible size for the wake dot ("dp9".."dp50", or legacy preset key). Default: 12dp. */
     var wakeDotSize: String
-        get() = WakeDotSize.fromKey(prefs.getString("wake_dot_size", WakeDotSize.Standard.key)).key
-        set(value) = prefs.edit().putString("wake_dot_size", WakeDotSize.fromKey(value).key).apply()
+        get() = WakeDotSize.fromDp(wakeDotSizeDp).key
+        set(value) {
+            val resolved = WakeDotSize.fromKey(value)
+            prefs.edit()
+                .putString("wake_dot_size", resolved.key)
+                .putInt("wake_dot_size_dp", resolved.coreDiameterDp)
+                .apply()
+        }
+
+    /** Continuous wake dot core diameter in dp (9dp–50dp). Default: 12dp. */
+    var wakeDotSizeDp: Int
+        get() = if (prefs.contains("wake_dot_size_dp")) {
+            WakeDotSize.clampDp(prefs.getInt("wake_dot_size_dp", WakeDotSize.DEFAULT_DP))
+        } else {
+            WakeDotSize.fromKey(prefs.getString("wake_dot_size", WakeDotSize.Standard.key)).coreDiameterDp
+        }
+        set(value) {
+            val resolved = WakeDotSize.fromDp(value)
+            prefs.edit()
+                .putInt("wake_dot_size_dp", resolved.coreDiameterDp)
+                .putString("wake_dot_size", resolved.key)
+                .apply()
+        }
 
     /** How long the wake dot stays visible (ms), clamped to safe bounds. Default: 2800ms (~2.8s). */
     var wakeDotDurationMs: Long

@@ -62,9 +62,13 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     )
     val installedApps: StateFlow<List<InstalledAppInfo>> = _installedApps.asStateFlow()
 
+    private val _wakeDotSize = MutableStateFlow(WakeDotSize.fromDp(settings.wakeDotSizeDp))
+    val wakeDotSizeState: StateFlow<WakeDotSize> = _wakeDotSize.asStateFlow()
+
     // Android holds preference listeners weakly, so keep this one referenced.
     private val watcher = settings.watch {
         _wakeWord.value = settings.wakeWord
+        _wakeDotSize.value = WakeDotSize.fromDp(settings.wakeDotSizeDp)
         VoiceService.syncState(app)
     }
 
@@ -214,8 +218,12 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
         }
 
     var wakeDotSize: WakeDotSize
-        get() = WakeDotSize.fromKey(settings.wakeDotSize)
-        set(value) { settings.wakeDotSize = value.key }
+        get() = _wakeDotSize.value
+        set(value) {
+            val clamped = WakeDotSize.fromDp(value.coreDiameterDp)
+            settings.wakeDotSizeDp = clamped.coreDiameterDp
+            _wakeDotSize.value = clamped
+        }
 
     var wakeDotDurationMs: Long
         get() = settings.wakeDotDurationMs

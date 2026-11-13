@@ -1,13 +1,14 @@
 package app.shilex.android.ui
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
-import android.os.Build
 import android.provider.Settings
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -30,22 +32,28 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,48 +62,147 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.shilex.android.Branding
 import app.shilex.android.assistant.AssistantViewModel
 import app.shilex.android.data.Settings as AppSettings
 import app.shilex.android.memory.MemoryStore
-import app.shilex.android.notify.NotificationWatch
 import app.shilex.android.orb.FloatingOrb
+import app.shilex.android.orb.TinyWakeDotPreview
+import app.shilex.android.permissions.PermissionId
+import app.shilex.android.permissions.PermissionRegistry
+import app.shilex.android.permissions.PermissionStatus
 import app.shilex.android.wake.WakeDotSize
 import app.shilex.android.wake.WakeIndicatorController
 import app.shilex.android.wake.WakeState
 import app.shilex.android.wake.WakeWordModel
+import kotlin.math.roundToInt
 
 /**
- * AMOLED Smoked Liquid Glass Settings Screen.
+ * AMOLED Smoked Liquid Glass Settings Screen with unified Permissions folder sub-screen
+ * and continuous live Wake Dot size slider.
  */
 @Composable
 fun SettingsScreen(assistant: AssistantViewModel) {
+    var showPermissionsScreen by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = showPermissionsScreen) { showPermissionsScreen = false }
+
+    AnimatedContent(
+        targetState = showPermissionsScreen,
+        transitionSpec = {
+            if (targetState) {
+                (slideInHorizontally { it / 6 } + fadeIn()) togetherWith (slideOutHorizontally { -it / 10 } + fadeOut())
+            } else {
+                (slideInHorizontally { -it / 6 } + fadeIn()) togetherWith (slideOutHorizontally { it / 10 } + fadeOut())
+            }
+        },
+        label = "settingsPermissionsNav",
+    ) { inPermissions ->
+        if (inPermissions) {
+            PermissionsSubScreen(onBack = { showPermissionsScreen = false })
+        } else {
+            SettingsMainContent(
+                assistant = assistant,
+                onOpenPermissions = { showPermissionsScreen = true },
+            )
+        }
+    }
+}
+
+@Composable
+private fun PermissionsSubScreen(onBack: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(OledBlack)
+            .verticalScroll(rememberScrollState())
+            .statusBarsPadding()
+            .padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val interaction = remember { MutableInteractionSource() }
+            Row(
+                modifier = Modifier
+                    .glassPressScale(interaction)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color(0x1CFFFFFF))
+                    .border(0.8.dp, GlassBorderSubtle, RoundedCornerShape(50))
+                    .clickable(interactionSource = interaction, indication = null, onClick = onBack)
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back to Settings",
+                    tint = PureWhite,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text("Settings", style = MaterialTheme.typography.labelLarge, color = PureWhite)
+            }
+        }
+
+        Column {
+            Text(
+                "Permissions",
+                style = MaterialTheme.typography.headlineSmall,
+                color = PureWhite,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                "Manage every Android runtime permission, system setting, and background capability JARVIS uses in one place.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Muted,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+
+        PermissionCenterPanel(compact = false, showBatchAllowBar = true)
+
+        FloatingDockBottomSpacer()
+    }
+}
+
+@Composable
+private fun SettingsMainContent(
+    assistant: AssistantViewModel,
+    onOpenPermissions: () -> Unit,
+) {
     val context = LocalContext.current
+    val activity = remember(context) { PermissionRegistry.findActivity(context) }
     val wakeOn by assistant.wakeWord.collectAsStateWithLifecycle()
     val wakeState by assistant.wakeState.collectAsStateWithLifecycle()
+    val wakeDotSize by assistant.wakeDotSizeState.collectAsStateWithLifecycle()
     val profile by assistant.personalProfile.collectAsStateWithLifecycle()
     val installedApps by assistant.installedApps.collectAsStateWithLifecycle()
+
+    var permissionSnapshot by remember { mutableStateOf(PermissionRegistry.snapshot(context, activity)) }
     var showProfileEditor by remember { mutableStateOf(false) }
     var showAppsBrowser by remember { mutableStateOf(false) }
     var localOn by remember { mutableStateOf(assistant.localCommands) }
     var networkOn by remember { mutableStateOf(assistant.networkSpeech) }
     var engine by remember { mutableStateOf(assistant.speechEngine) }
-    var batteryExempt by remember { mutableStateOf(assistant.batteryExempt) }
     var dotOn by remember { mutableStateOf(assistant.wakeIndicator) }
-    var dotSize by remember { mutableStateOf(assistant.wakeDotSize) }
     var dotDurationMs by remember { mutableLongStateOf(assistant.wakeDotDurationMs) }
-    var overlayAllowed by remember { mutableStateOf(FloatingOrb.allowed(context)) }
-    var micGranted by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
-        )
-    }
-    var micDeniedOnce by remember { mutableStateOf(false) }
+
+    val micGranted = permissionSnapshot.deduplicatedItems
+        .firstOrNull { it.spec.id == PermissionId.Microphone }
+        ?.status == PermissionStatus.Granted
+    val overlayAllowed = permissionSnapshot.deduplicatedItems
+        .firstOrNull { it.spec.id == PermissionId.Overlay }
+        ?.status == PermissionStatus.Granted
 
     if (showProfileEditor) {
         PersonalProfileDialog(
@@ -114,50 +221,16 @@ fun SettingsScreen(assistant: AssistantViewModel) {
         )
     }
 
-    val askWakePermissions = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) { results ->
-        val micNow = results[Manifest.permission.RECORD_AUDIO]
-            ?: (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
-        micGranted = micNow
-        if (micNow) {
-            micDeniedOnce = false
-            assistant.setWakeWord(true)
-        } else {
-            micDeniedOnce = true
-            assistant.setWakeWord(false)
-        }
-    }
-
     LifecycleResumeEffect(Unit) {
-        batteryExempt = assistant.batteryExempt
+        permissionSnapshot = PermissionRegistry.snapshot(context, activity)
         engine = assistant.speechEngine
-        overlayAllowed = FloatingOrb.allowed(context)
-        micGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         assistant.refreshWakeState()
         onPauseOrDispose { }
     }
-    val open = { action: String -> context.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-    val openAppSettings = {
-        context.startActivity(
-            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-        )
-    }
-    val requestWakePermissions = {
-        val needed = buildList {
-            if (!micGranted) add(Manifest.permission.RECORD_AUDIO)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-            ) {
-                add(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }
-        if (needed.isEmpty()) {
-            assistant.setWakeWord(true)
-        } else {
-            askWakePermissions.launch(needed.toTypedArray())
-        }
+
+    val openAction = { action: String ->
+        runCatching { context.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        Unit
     }
 
     Column(
@@ -235,6 +308,61 @@ fun SettingsScreen(assistant: AssistantViewModel) {
             }
         }
 
+        // Single Dedicated Permissions Folder (opens full Permissions screen)
+        Section("Permissions") {
+            val interaction = remember { MutableInteractionSource() }
+            val pendingCount = (permissionSnapshot.actionableTotalCount - permissionSnapshot.grantedCount).coerceAtLeast(0)
+            val allEssentialOk = permissionSnapshot.essentialPending.isEmpty()
+            val statusBadgeColor = when {
+                pendingCount == 0 -> ElectricCyan
+                !allEssentialOk -> CoralError
+                else -> AmberWarning
+            }
+            val statusBadgeLabel = when {
+                pendingCount == 0 -> "All granted"
+                else -> "$pendingCount need setup"
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .glassPressScale(interaction)
+                    .clickable(interactionSource = interaction, indication = null, onClick = onOpenPermissions)
+                    .padding(vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                GlassRowIcon(
+                    icon = Icons.Filled.Lock,
+                    tint = ElectricCyan,
+                    accentGlow = allEssentialOk,
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Permissions",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = PureWhite,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "${permissionSnapshot.grantedCount} of ${permissionSnapshot.actionableTotalCount} granted • Microphone, Notifications, Accessibility, Overlay, Battery & more",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Muted,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Pill(statusBadgeLabel, statusBadgeColor, dot = pendingCount == 0)
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = "Open Permissions",
+                    tint = Muted,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+
         Section("Personal Profile") {
             val songSummary = if (profile.favoriteSongs.isEmpty()) "No favourite songs saved" else profile.favoriteSongs.joinToString(", ")
             val musicAppText = profile.preferredMusicApp.ifBlank { "Default (YouTube Music / Spotify)" }
@@ -272,7 +400,7 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                 icon = Icons.Filled.Phone,
                 iconTint = PureWhite,
             ) {
-                TextButton(onClick = { open(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS) }) {
+                TextButton(onClick = { openAction(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS) }) {
                     Text("Open", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
                 }
             }
@@ -304,45 +432,28 @@ fun SettingsScreen(assistant: AssistantViewModel) {
 
         Section("Floating Presence") {
             val prefs = remember { AppSettings(context) }
-            var orbOn by remember { mutableStateOf(prefs.floatingOrb && FloatingOrb.allowed(context)) }
-            LifecycleResumeEffect(Unit) {
-                orbOn = prefs.floatingOrb && FloatingOrb.allowed(context)
-                onPauseOrDispose { }
+            var orbOn by remember { mutableStateOf(prefs.floatingOrb && overlayAllowed) }
+            LaunchedEffect(overlayAllowed) {
+                orbOn = prefs.floatingOrb && overlayAllowed
             }
             SwitchRow(
                 "Use ${Branding.ASSISTANT_NAME} over any app",
-                "A small orb floats over your apps. Tap to talk, double-tap to type, drag to move.",
+                if (overlayAllowed) {
+                    "A small orb floats over your apps. Tap to talk, double-tap to type, drag to move."
+                } else {
+                    "Display Over Other Apps is off. Turning this on opens Permissions so you can allow it."
+                },
                 orbOn,
                 icon = Icons.Filled.Star,
             ) { on ->
-                prefs.floatingOrb = on
-                orbOn = on && FloatingOrb.allowed(context)
-                if (on && !FloatingOrb.allowed(context)) {
-                    context.startActivity(
-                        Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                    )
-                }
-                FloatingOrb.sync(context)
-            }
-        }
-
-        Section("Notifications") {
-            var notifyOn by remember { mutableStateOf(NotificationWatch.allowed(context)) }
-            LifecycleResumeEffect(Unit) {
-                notifyOn = NotificationWatch.allowed(context)
-                onPauseOrDispose { }
-            }
-            InfoRow(
-                "What did I miss?",
-                (if (notifyOn) "On. " else "Off. ") +
-                    "Ask \"what did I miss?\" and hear messages from people first. Notifications stay in memory on this " +
-                    "phone; Gemini gets a short summary only when you ask, with codes hidden.",
-                icon = Icons.Filled.Notifications,
-                iconTint = if (notifyOn) ElectricCyan else SlateMuted,
-            ) {
-                TextButton(onClick = { open(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS) }) {
-                    Text(if (notifyOn) "Change" else "Turn on", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
+                if (on && !overlayAllowed) {
+                    prefs.floatingOrb = true
+                    orbOn = false
+                    onOpenPermissions()
+                } else {
+                    prefs.floatingOrb = on
+                    orbOn = on && overlayAllowed
+                    FloatingOrb.sync(context)
                 }
             }
         }
@@ -350,15 +461,19 @@ fun SettingsScreen(assistant: AssistantViewModel) {
         Section("Wake Word") {
             SwitchRow(
                 "Enable wake word",
-                "Hands-free voice activation without opening ${Branding.ASSISTANT_NAME} or tapping the mic.",
+                if (micGranted) {
+                    "Hands-free voice activation without opening ${Branding.ASSISTANT_NAME} or tapping the mic."
+                } else {
+                    "Needs Microphone permission. Turn on to open Permissions and allow Microphone."
+                },
                 wakeOn && micGranted,
                 enabled = assistant.wakeWordAvailable,
                 icon = MicIcon,
             ) { on ->
-                if (on) {
-                    requestWakePermissions()
+                if (on && !micGranted) {
+                    onOpenPermissions()
                 } else {
-                    assistant.setWakeWord(false)
+                    assistant.setWakeWord(on)
                 }
             }
             GlassDivider()
@@ -369,23 +484,6 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                 Pill(WakeWordModel.PHRASE, ElectricCyan, dot = false)
             }
             GlassDivider()
-            InfoRow(
-                "Microphone permission",
-                when {
-                    micGranted -> "Granted. Required for offline wake-word detection and voice commands."
-                    micDeniedOnce -> "Denied. Allow Microphone in App Settings to use hands-free wake word."
-                    else -> "Not granted yet. Tap Allow to enable hands-free wake word."
-                },
-            ) {
-                if (micGranted) {
-                    Pill("Granted", ElectricCyan)
-                } else {
-                    TextButton(onClick = { if (micDeniedOnce) openAppSettings() else requestWakePermissions() }) {
-                        Text(if (micDeniedOnce) "App Info" else "Allow", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-            }
-            GlassDivider()
             val (statusLabel, statusDetail, statusColor) = wakeStatusUi(wakeOn, micGranted, wakeState)
             InfoRow("Background listening", statusDetail) {
                 Pill(statusLabel, statusColor)
@@ -393,7 +491,7 @@ fun SettingsScreen(assistant: AssistantViewModel) {
             GlassDivider()
             SwitchRow(
                 "Wake activation dot",
-                "Shows a subtle ~${dotSize.coreDiameterDp}dp top-center Liquid Glass dot for ${formatSeconds(dotDurationMs)} only when \"${WakeWordModel.PHRASE}\" triggers.",
+                "Shows a subtle ~${wakeDotSize.coreDiameterDp}dp top-center Liquid Glass dot for ${formatSeconds(dotDurationMs)} when \"${WakeWordModel.PHRASE}\" triggers.",
                 dotOn,
             ) { on ->
                 dotOn = on
@@ -402,15 +500,9 @@ fun SettingsScreen(assistant: AssistantViewModel) {
 
             if (dotOn) {
                 GlassDivider()
-                OptionChoiceRow(
-                    title = "Dot size",
-                    detail = "Core dot & Liquid Glass glow (default Standard 12dp).",
-                    options = WakeDotSize.entries.map { it to "${it.label} (${it.coreDiameterDp}dp)" },
-                    selected = dotSize,
-                    onSelect = { chosen ->
-                        dotSize = chosen
-                        assistant.wakeDotSize = chosen
-                    },
+                WakeDotSizeSliderRow(
+                    currentSize = wakeDotSize,
+                    onSizeChanged = { chosen -> assistant.wakeDotSize = chosen },
                 )
                 GlassDivider()
                 OptionChoiceRow(
@@ -423,30 +515,6 @@ fun SettingsScreen(assistant: AssistantViewModel) {
                         assistant.wakeDotDurationMs = chosenMs
                     },
                 )
-                GlassDivider()
-                InfoRow(
-                    "Dot over other apps",
-                    if (overlayAllowed) {
-                        "Allowed. Appears on your home screen and ordinary apps (suppressed on banking, UPI, lock, and PIN screens)."
-                    } else {
-                        "Optional. Allow Display over other apps so the subtle dot appears on your home screen and other apps."
-                    },
-                ) {
-                    if (overlayAllowed) {
-                        Pill("Allowed", ElectricCyan)
-                    } else {
-                        TextButton(
-                            onClick = {
-                                context.startActivity(
-                                    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
-                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                                )
-                            },
-                        ) {
-                            Text("Allow", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                }
             }
 
             GlassDivider()
@@ -531,29 +599,6 @@ fun SettingsScreen(assistant: AssistantViewModel) {
             }
         }
 
-        Section("Permissions & Phone Control") {
-            ControlCard(Modifier.padding(vertical = 6.dp), showWhenOn = true)
-            GlassDivider()
-            InfoRow(
-                "Background running",
-                if (batteryExempt) "Allowed. Battery saver will not interrupt wake word." else "Allow under Battery → Unrestricted so the wake word runs smoothly in background.",
-            ) {
-                TextButton(onClick = { open(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS) }) {
-                    Text("Open", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
-                }
-            }
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                "PERMISSION CENTER",
-                style = MaterialTheme.typography.labelMedium,
-                color = SlateMuted,
-                modifier = Modifier.padding(start = 6.dp),
-            )
-            PermissionCenterPanel()
-        }
-
         Section("Privacy Boundaries") {
             InfoRow(
                 "What leaves the phone",
@@ -594,15 +639,104 @@ fun SettingsScreen(assistant: AssistantViewModel) {
     }
 }
 
+@Composable
+private fun WakeDotSizeSliderRow(
+    currentSize: WakeDotSize,
+    onSizeChanged: (WakeDotSize) -> Unit,
+) {
+    var sliderValue by remember { mutableFloatStateOf(currentSize.coreDiameterDp.toFloat()) }
+    LaunchedEffect(currentSize.coreDiameterDp) {
+        if (sliderValue.roundToInt() != currentSize.coreDiameterDp) {
+            sliderValue = currentSize.coreDiameterDp.toFloat()
+        }
+    }
+
+    val previewSize = remember(sliderValue) { WakeDotSize.fromSlider(sliderValue) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Wake Dot Size: ${previewSize.coreDiameterDp}dp",
+                style = MaterialTheme.typography.titleMedium,
+                color = PureWhite,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Pill("${WakeDotSize.MIN_DP}dp – ${WakeDotSize.MAX_DP}dp", ElectricCyan, dot = false)
+        }
+
+        Text(
+            text = "Adjust continuously between ${WakeDotSize.MIN_DP}dp and ${WakeDotSize.MAX_DP}dp. Halo (~${previewSize.glowDiameterDp}dp) scales proportionally.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Muted,
+        )
+
+        // Immediate real-size Liquid Glass dot preview on dark OLED backdrop
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(98.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(OledBlack)
+                .border(0.8.dp, GlassBorderSubtle, RoundedCornerShape(18.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            TinyWakeDotPreview(dotSize = previewSize)
+            Text(
+                text = "Live preview • ${previewSize.coreDiameterDp}dp",
+                style = MaterialTheme.typography.labelSmall,
+                color = Muted.copy(alpha = 0.72f),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 6.dp),
+            )
+        }
+
+        Slider(
+            value = sliderValue,
+            onValueChange = { raw ->
+                val clamped = WakeDotSize.clampFloat(raw)
+                sliderValue = clamped
+                onSizeChanged(WakeDotSize.fromSlider(clamped))
+            },
+            onValueChangeFinished = {
+                val snapped = WakeDotSize.fromSlider(sliderValue)
+                sliderValue = snapped.coreDiameterDp.toFloat()
+                onSizeChanged(snapped)
+            },
+            valueRange = WakeDotSize.MIN_DP.toFloat()..WakeDotSize.MAX_DP.toFloat(),
+            colors = SliderDefaults.colors(
+                thumbColor = PureWhite,
+                activeTrackColor = ElectricCyan,
+                inactiveTrackColor = Color(0x2EFFFFFF),
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics {
+                    contentDescription = "Wake Dot Size"
+                    stateDescription = "${previewSize.coreDiameterDp}dp"
+                },
+        )
+    }
+}
+
 private fun wakeStatusUi(wakeOn: Boolean, micGranted: Boolean, state: WakeState): Triple<String, String, Color> = when {
-    !micGranted && wakeOn -> Triple("Blocked", "Waiting for microphone permission.", CoralError)
+    !micGranted -> Triple("Permission off", "Microphone permission is off. Manage in Settings → Permissions.", AmberWarning)
     !wakeOn -> Triple("Off", "Turn on wake word above to listen hands-free.", SlateMuted)
     state == WakeState.Listening -> Triple("Active", "Listening offline in background for \"${WakeWordModel.PHRASE}\".", ElectricCyan)
     state == WakeState.Starting -> Triple("Starting", "Preparing offline wake-word detector…", ElectricCyan)
     state == WakeState.PausedSession -> Triple("In session", "Paused while your voice conversation runs; resumes automatically.", ElectricCyan)
     state == WakeState.PausedMicBusy -> Triple("Mic busy", "Another app is using the microphone; resumes when free.", AmberWarning)
     state == WakeState.PausedInCall -> Triple("In call", "Paused during a call; resumes automatically.", AmberWarning)
-    state == WakeState.PermissionNeeded -> Triple("Blocked", "Microphone permission required.", CoralError)
+    state == WakeState.PermissionNeeded -> Triple("Blocked", "Allow Microphone in Settings → Permissions.", CoralError)
     state == WakeState.Unavailable -> Triple("Unavailable", "Offline wake-word model could not load.", CoralError)
     else -> Triple("Standby", "Enabled. Open or unlock phone to start background service.", SlateMuted)
 }

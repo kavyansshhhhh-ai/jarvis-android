@@ -8,18 +8,93 @@ import org.junit.Test
 class WakeIndicatorTest {
 
     @Test
-    fun defaultSizeAndDurationMatchVisibleSubtleRequirements() {
+    fun defaultSizeAndContinuousSliderRangeScaleProportionallyAndPersist() {
+        assertEquals(9, WakeDotSize.MIN_DP)
+        assertEquals(50, WakeDotSize.MAX_DP)
+        assertEquals(12, WakeDotSize.DEFAULT_DP)
         assertEquals(WakeDotSize.Standard, WakeDotSize.fromKey(null))
         assertEquals(WakeDotSize.Standard, WakeDotSize.fromKey("unknown"))
+        assertEquals(WakeDotSize.Small, WakeDotSize.fromKey("small"))
+        assertEquals(WakeDotSize.Large, WakeDotSize.fromKey("large"))
         assertEquals(9, WakeDotSize.Small.coreDiameterDp)
+        assertEquals(18, WakeDotSize.Small.glowDiameterDp)
         assertEquals(12, WakeDotSize.Standard.coreDiameterDp)
         assertEquals(22, WakeDotSize.Standard.glowDiameterDp)
         assertEquals(50, WakeDotSize.Max.coreDiameterDp)
-        assertEquals(listOf(9, 12, 16, 22, 30, 40, 50), WakeDotSize.entries.map { it.coreDiameterDp })
+        assertEquals(74, WakeDotSize.Max.glowDiameterDp)
+
+        // Clamps min/max boundaries cleanly
+        assertEquals(9, WakeDotSize.fromDp(2).coreDiameterDp)
+        assertEquals(50, WakeDotSize.fromDp(90).coreDiameterDp)
+        assertEquals(9, WakeDotSize.fromSlider(4.2f).coreDiameterDp)
+        assertEquals(50, WakeDotSize.fromSlider(63.8f).coreDiameterDp)
+
+        // Intermediate continuous slider rounding
+        assertEquals(24, WakeDotSize.fromSlider(24.3f).coreDiameterDp)
+        assertEquals(25, WakeDotSize.fromSlider(24.6f).coreDiameterDp)
+        assertEquals(33, WakeDotSize.fromKey("dp33").coreDiameterDp)
+        assertEquals(27, WakeDotSize.fromKey("27dp").coreDiameterDp)
+
+        // Round-trip key serialization (persisted across restart)
+        (9..50).forEach { dp ->
+            val size = WakeDotSize.fromDp(dp)
+            assertEquals("${dp}dp", size.label)
+            assertEquals("dp$dp", size.key)
+            assertEquals(size, WakeDotSize.fromKey(size.key))
+        }
+
+        // Glow & canvas scale monotonically with room for 1.12x radial halo pulse (never clips)
+        var prevGlow = 0
+        var prevCanvas = 0
+        (9..50).forEach { dp ->
+            val size = WakeDotSize.fromDp(dp)
+            assertTrue("Glow for ${dp}dp must exceed core", size.glowDiameterDp > size.coreDiameterDp)
+            assertTrue("Glow must not shrink as slider grows at ${dp}dp", size.glowDiameterDp >= prevGlow)
+            assertTrue("Canvas must not shrink at ${dp}dp", size.canvasDp >= prevCanvas)
+            assertTrue(
+                "Canvas ${size.canvasDp}dp must hold 1.12x pulse halo ${size.glowDiameterDp * 1.12f}dp",
+                size.canvasDp > size.glowDiameterDp * 1.12f,
+            )
+            prevGlow = size.glowDiameterDp
+            prevCanvas = size.canvasDp
+        }
+
         assertTrue(WakeIndicatorController.DISPLAY_DURATION_MS in 2_500L..3_000L)
         assertEquals(2_000L, WakeIndicatorController.clampDurationMs(500L))
         assertEquals(4_000L, WakeIndicatorController.clampDurationMs(10_000L))
         assertTrue(WakeIndicatorController.cleanupDelayMs(2_800L) > 2_800L)
+    }
+
+    @Test
+    fun sliderSimulationAndIntermediateRounding() {
+        // Continuous float slider values from 9.0f up to 50.0f
+        var currentFloat = 9.0f
+        while (currentFloat <= 50.0f) {
+            val size = WakeDotSize.fromSlider(currentFloat)
+            assertTrue("Core diameter ${size.coreDiameterDp} out of bounds", size.coreDiameterDp in 9..50)
+            assertEquals("dp${size.coreDiameterDp}", size.key)
+            assertEquals("${size.coreDiameterDp}dp", size.label)
+            currentFloat += 0.35f
+        }
+
+        // Live preview scaling checks
+        val minDot = WakeDotSize.fromSlider(9.0f)
+        val midDot = WakeDotSize.fromSlider(24.4f)
+        val maxDot = WakeDotSize.fromSlider(50.0f)
+
+        assertEquals(9, minDot.coreDiameterDp)
+        assertEquals(24, midDot.coreDiameterDp)
+        assertEquals(50, maxDot.coreDiameterDp)
+
+        assertTrue("Glow must scale with core", minDot.glowDiameterDp < midDot.glowDiameterDp)
+        assertTrue("Glow must scale with core", midDot.glowDiameterDp < maxDot.glowDiameterDp)
+        assertTrue("Canvas must scale with glow", minDot.canvasDp < midDot.canvasDp)
+        assertTrue("Canvas must scale with glow", midDot.canvasDp < maxDot.canvasDp)
+
+        // Safety fallback on invalid input
+        assertEquals(WakeDotSize.Standard, WakeDotSize.fromSlider(Float.NaN))
+        assertEquals(WakeDotSize.Small, WakeDotSize.fromSlider(Float.NEGATIVE_INFINITY))
+        assertEquals(WakeDotSize.Max, WakeDotSize.fromSlider(Float.POSITIVE_INFINITY))
     }
 
     @Test

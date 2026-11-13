@@ -121,6 +121,7 @@ fun ShilexApp(assistant: AssistantViewModel) {
     val activity by assistant.activity.collectAsStateWithLifecycle()
     val wakeWord by assistant.wakeWord.collectAsStateWithLifecycle()
     val wakeDot by assistant.wakeDot.collectAsStateWithLifecycle()
+    val wakeDotSize by assistant.wakeDotSizeState.collectAsStateWithLifecycle()
     val level by assistant.level.collectAsStateWithLifecycle()
     val task by assistant.task.collectAsStateWithLifecycle()
     var onboarded by rememberSaveable { mutableStateOf(assistant.onboarded) }
@@ -180,7 +181,7 @@ fun ShilexApp(assistant: AssistantViewModel) {
                         TinyWakeDot(
                             triggerId = wakeDot.triggerId,
                             durationMs = wakeDot.durationMs,
-                            dotSize = assistant.wakeDotSize,
+                            dotSize = wakeDotSize,
                             modifier = Modifier
                                 .align(Alignment.TopCenter)
                                 .statusBarsPadding()
