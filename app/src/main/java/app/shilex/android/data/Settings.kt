@@ -40,6 +40,11 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("wake_word", false)
         set(value) = prefs.edit().putBoolean("wake_word", value).apply()
 
+    /** Tiny top-center activation dot when the wake phrase triggers. */
+    var wakeIndicator: Boolean
+        get() = prefs.getBoolean("wake_indicator", true)
+        set(value) = prefs.edit().putBoolean("wake_indicator", value).apply()
+
     /** After the wake word, simple commands run on the phone (no Gemini) when it can hear them. */
     var localCommands: Boolean
         get() = prefs.getBoolean("local_commands", true)

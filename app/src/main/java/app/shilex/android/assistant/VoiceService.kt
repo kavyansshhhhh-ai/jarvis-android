@@ -28,6 +28,8 @@ import app.shilex.android.MainActivity
 import app.shilex.android.R
 import app.shilex.android.data.Settings
 import app.shilex.android.local.LocalTurn
+import app.shilex.android.orb.WakeActivationOverlay
+import app.shilex.android.wake.WakeIndicator
 import app.shilex.android.wake.WakeListener
 import app.shilex.android.wake.WakePolicy
 import app.shilex.android.wake.WakeState
@@ -84,6 +86,7 @@ class VoiceService : Service() {
     override fun onDestroy() {
         main.removeCallbacksAndMessages(RESUME_WAKE_TOKEN)
         wake.stop()
+        WakeActivationOverlay.dismiss(this)
         releaseWakeLock()
         syncState(this)
         if (instance === this) instance = null
@@ -123,6 +126,7 @@ class VoiceService : Service() {
             return
         }
         wake.stop()
+        WakeActivationOverlay.dismiss(this)
         syncState(this)
         stopSelf()
     }
@@ -154,6 +158,10 @@ class VoiceService : Service() {
 
         // Briefly hold a partial wake lock so screen-off handover completes cleanly.
         acquireHandoverWakeLock()
+        val interactive = runCatching { getSystemService(PowerManager::class.java)?.isInteractive == true }.getOrDefault(true)
+        if (WakeIndicator.onWakeDetected(now, Settings(this).wakeIndicator, keyguard.isKeyguardLocked, interactive)) {
+            WakeActivationOverlay.showBriefly(this)
+        }
         runCatching { ToneGenerator(AudioManager.STREAM_SYSTEM, 70).startTone(ToneGenerator.TONE_PROP_BEEP, 130) }
         if (Settings(this).localCommands && LocalTurn.get(this).start()) return
         VoiceSession.get(this).start()

@@ -6,7 +6,7 @@ import java.time.format.DateTimeFormatter
 
 /** System instructions for the phone. Versioned so behaviour changes are reviewable. */
 object Instructions {
-    const val VERSION = 8
+    const val VERSION = 9
 
     private val LANGUAGE = mapOf(
         "auto" to "Reply in the same language mix the user speaks (English, Hindi or Hinglish).",
@@ -96,10 +96,16 @@ object Instructions {
         - Taps like Send, Call, Delete, Book show the user an Allow button. Say "tap Allow
           to confirm". If they cancel, stop. Never try another way around it. Pay and Buy
           taps are refused: that part is always the user's.
-        - Banking, UPI, password, Play Store and Settings apps are off limits, and you never
-          pay or type a PIN, password or OTP. When the task reaches such a step, call
-          hand_to_user with the step in a few words, say "your turn, tap Done when finished",
-          and after Done carry on with the rest from the screen it returns.
+        - Banking apps, password managers, authenticators, Play Store and Settings remain off
+          limits, and you NEVER pay or read/type a PIN, MPIN, OTP, CVV or password.
+        - Supported UPI apps (e.g. Google Pay, PhonePe, Paytm, BHIM, Amazon Pay): when the user
+          explicitly asks, you may open them, navigate ordinary screens, pick a recipient or UPI ID,
+          fill the amount and note, and read back the visible non-sensitive transaction summary
+          (recipient and amount). Get explicit confirmation on any Allow card before sensitive
+          prep steps, then STOP before final Pay authorization or any PIN/MPIN/OTP/CVV screen:
+          call hand_to_user (e.g. "Tap Pay and enter your UPI PIN"), say "your turn, tap Done
+          when finished", and only inspect the visible result screen after Done or permission. If
+          an app blocks Accessibility, hand control back to the user and explain why.
         - Keep going step by step until the task is done, then say what you did in one line.
           If stuck after a few tries, say what you see and ask.
 

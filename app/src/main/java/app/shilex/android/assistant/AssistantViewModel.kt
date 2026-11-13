@@ -11,8 +11,11 @@ import app.shilex.android.local.LocalPhase
 import app.shilex.android.local.LocalTurn
 import app.shilex.android.task.Task
 import app.shilex.android.task.TaskTracker
+import app.shilex.android.orb.WakeActivationOverlay
 import app.shilex.android.wake.VoiceProfile
 import app.shilex.android.wake.VoiceSetup
+import app.shilex.android.wake.WakeDotState
+import app.shilex.android.wake.WakeIndicator
 import app.shilex.android.wake.WakeState
 import app.shilex.android.wake.WakeWordModel
 import kotlinx.coroutines.delay
@@ -39,6 +42,9 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Live background wake-word listener status. */
     val wakeState: StateFlow<WakeState> = VoiceService.wakeState
+
+    /** Live event state for the tiny top-center wake activation dot. */
+    val wakeDot: StateFlow<WakeDotState> = WakeIndicator.state
 
     // Android holds preference listeners weakly, so keep this one referenced.
     private val watcher = settings.watch {
@@ -155,8 +161,16 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     fun setWakeWord(on: Boolean) {
         Settings(getApplication()).wakeWord = on
         _wakeWord.value = on
+        if (!on) WakeActivationOverlay.dismiss(getApplication())
         VoiceService.start(getApplication())
     }
+
+    var wakeIndicator: Boolean
+        get() = settings.wakeIndicator
+        set(value) {
+            settings.wakeIndicator = value
+            if (!value) WakeActivationOverlay.dismiss(getApplication())
+        }
 
     fun refreshWakeState() {
         if (VoiceService.wakeWordWanted(getApplication())) {

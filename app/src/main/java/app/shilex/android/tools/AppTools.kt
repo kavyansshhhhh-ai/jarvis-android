@@ -74,6 +74,12 @@ object AppTools {
             return Results.done("Opened ${app.label}. ${Branding.ASSISTANT_NAME} doesn't read or touch this app; the user takes it from here.")
         }
         val snap = control.snapshot() ?: return Results.done(done)
+        if (snap.sensitiveAuth) {
+            return Results.done("$done Now on a PIN, OTP, or password screen. Stop here and let the user handle it directly.")
+        }
+        if (snap.upiApp && snap.elements.isEmpty()) {
+            return Results.done("$done ${app.label} restricts Accessibility inspection here for security; the user takes it from here.")
+        }
         return Results.done("$done Screen now:\n" + ScreenText.describe(snap.appLabel, snap.elements, snap.more))
     }
 

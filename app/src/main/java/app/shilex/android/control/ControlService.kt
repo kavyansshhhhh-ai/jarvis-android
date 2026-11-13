@@ -44,13 +44,35 @@ class ControlService : AccessibilityService() {
         super.onDestroy()
     }
 
-    class Snapshot(val packageName: String, val appLabel: String, val elements: List<ScreenElement>, val more: Boolean) {
+    class Snapshot(
+        val packageName: String,
+        val appLabel: String,
+        val elements: List<ScreenElement>,
+        val more: Boolean,
+        val sensitiveAuth: Boolean = false,
+    ) {
         val blocked get() = ControlRules.blocked(packageName)
+        val upiApp get() = ControlRules.isSupportedUpiApp(packageName)
     }
 
     fun foregroundPackage(): String = rootInActiveWindow?.packageName?.toString().orEmpty()
 
-    /** Reads the app in front. Blocked apps come back without their contents. */
+    /** True when the active window shows a visible password, PIN, MPIN, OTP, or CVV prompt/field. */
+    fun isSensitiveAuthActive(): Boolean {
+        val root = rootInActiveWindow ?: return false
+        fun visit(node: AccessibilityNodeInfo): Boolean {
+            if (!node.isVisibleToUser) return false
+            val viewId = node.viewIdResourceName?.substringAfterLast('/').orEmpty()
+            if (node.isPassword || ControlRules.isSensitiveAuthCue(ownLabel(node), viewId, node.isPassword)) return true
+            for (i in 0 until node.childCount) {
+                if (node.getChild(i)?.let(::visit) == true) return true
+            }
+            return false
+        }
+        return visit(root)
+    }
+
+    /** Reads the app in front. Blocked apps and sensitive PIN/OTP/password screens come back without contents. */
     fun snapshot(): Snapshot? {
         val root = rootInActiveWindow ?: return null
         val pkg = root.packageName?.toString().orEmpty()
@@ -64,27 +86,45 @@ class ControlService : AccessibilityService() {
         val elements = mutableListOf<ScreenElement>()
         val nodes = mutableMapOf<Int, AccessibilityNodeInfo>()
         var more = false
+        var sensitiveAuth = false
         fun visit(node: AccessibilityNodeInfo, insideTappable: Boolean) {
-            if (!node.isVisibleToUser) return
+            if (sensitiveAuth || !node.isVisibleToUser) return
+            val viewId = node.viewIdResourceName?.substringAfterLast('/').orEmpty()
+            val own = ownLabel(node)
+            if (node.isPassword || ControlRules.isSensitiveAuthCue(own, viewId, node.isPassword)) {
+                sensitiveAuth = true
+                return
+            }
             if (node.isScrollable) more = true
             val tappable = node.isClickable || node.isEditable || node.isCheckable
-            val own = ownLabel(node)
             val include = when {
                 tappable -> true
                 own.isNotEmpty() && !insideTappable -> true
                 else -> false
             }
             if (include && elements.size < ScreenText.MAX_ELEMENTS) {
-                val text = own.ifEmpty { childText(node) }.ifEmpty { node.viewIdResourceName?.substringAfterLast('/').orEmpty() }
+                val text = own.ifEmpty { childText(node) }.ifEmpty { viewId }
                 if (text.isNotEmpty() || node.isEditable) {
                     val number = elements.size + 1
-                    elements += ScreenElement(number, role(node), text, if (node.isEditable) node.text?.toString().orEmpty() else "")
+                    val value = if (node.isEditable && !ControlRules.isSensitiveCredentialField(text, viewId, node.isPassword)) {
+                        node.text?.toString().orEmpty()
+                    } else {
+                        ""
+                    }
+                    elements += ScreenElement(number, role(node), text, value)
                     nodes[number] = node
                 }
             }
-            for (i in 0 until node.childCount) node.getChild(i)?.let { visit(it, insideTappable || tappable) }
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { visit(it, insideTappable || tappable) }
+                if (sensitiveAuth) return
+            }
         }
         visit(root, false)
+        if (sensitiveAuth) {
+            lastNodes = emptyMap()
+            return Snapshot(pkg, label, emptyList(), false, sensitiveAuth = true)
+        }
         lastNodes = nodes
         return Snapshot(pkg, label, elements, more || elements.size >= ScreenText.MAX_ELEMENTS)
     }

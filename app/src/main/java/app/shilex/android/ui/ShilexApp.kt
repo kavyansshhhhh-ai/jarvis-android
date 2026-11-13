@@ -9,7 +9,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Alignment
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
@@ -46,7 +49,11 @@ import app.shilex.android.assistant.UiState
 import app.shilex.android.assistant.VoiceService
 import app.shilex.android.local.ActivityLog
 import app.shilex.android.local.LocalPhase
+import app.shilex.android.orb.TinyWakeDot
 import app.shilex.android.task.Task
+import app.shilex.android.wake.WakeIndicator
+import app.shilex.android.wake.WakeIndicatorController
+import kotlinx.coroutines.delay
 
 private enum class Tab(val label: String, val icon: ImageVector) {
     Home("Home", Icons.Filled.Home),
@@ -61,10 +68,18 @@ fun ShilexApp(assistant: AssistantViewModel) {
     val localPhase by assistant.localPhase.collectAsStateWithLifecycle()
     val activity by assistant.activity.collectAsStateWithLifecycle()
     val wakeWord by assistant.wakeWord.collectAsStateWithLifecycle()
+    val wakeDot by assistant.wakeDot.collectAsStateWithLifecycle()
     val level by assistant.level.collectAsStateWithLifecycle()
     val task by assistant.task.collectAsStateWithLifecycle()
     var onboarded by rememberSaveable { mutableStateOf(assistant.onboarded) }
     var tab by rememberSaveable { mutableIntStateOf(0) }
+
+    LaunchedEffect(wakeDot.visible, wakeDot.triggerId) {
+        if (wakeDot.visible) {
+            delay(WakeIndicatorController.DISPLAY_DURATION_MS)
+            WakeIndicator.dismiss()
+        }
+    }
 
     ShilexTheme {
         Surface(
@@ -72,7 +87,18 @@ fun ShilexApp(assistant: AssistantViewModel) {
             contentColor = PureWhite,
             modifier = Modifier.fillMaxSize(),
         ) {
-            Content(assistant, state, localPhase, level, task, activity, wakeWord, onboarded, { onboarded = true }, tab) { tab = it }
+            Box(Modifier.fillMaxSize()) {
+                Content(assistant, state, localPhase, level, task, activity, wakeWord, onboarded, { onboarded = true }, tab) { tab = it }
+                if (wakeDot.visible && assistant.wakeIndicator) {
+                    TinyWakeDot(
+                        triggerId = wakeDot.triggerId,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .statusBarsPadding()
+                            .padding(top = 6.dp),
+                    )
+                }
+            }
         }
     }
 }

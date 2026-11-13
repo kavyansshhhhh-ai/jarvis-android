@@ -53,6 +53,8 @@ fun SettingsScreen(assistant: AssistantViewModel) {
     var networkOn by remember { mutableStateOf(assistant.networkSpeech) }
     var engine by remember { mutableStateOf(assistant.speechEngine) }
     var batteryExempt by remember { mutableStateOf(assistant.batteryExempt) }
+    var dotOn by remember { mutableStateOf(assistant.wakeIndicator) }
+    var overlayAllowed by remember { mutableStateOf(FloatingOrb.allowed(context)) }
     var micGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
@@ -78,6 +80,7 @@ fun SettingsScreen(assistant: AssistantViewModel) {
     LifecycleResumeEffect(Unit) {
         batteryExempt = assistant.batteryExempt
         engine = assistant.speechEngine
+        overlayAllowed = FloatingOrb.allowed(context)
         micGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         assistant.refreshWakeState()
         onPauseOrDispose { }
@@ -245,6 +248,41 @@ fun SettingsScreen(assistant: AssistantViewModel) {
             val (statusLabel, statusDetail, statusColor) = wakeStatusUi(wakeOn, micGranted, wakeState)
             InfoRow("Background listening", statusDetail) {
                 Pill(statusLabel, statusColor)
+            }
+
+            SwitchRow(
+                "Wake activation dot",
+                "Shows a tiny top-center Liquid Glass dot for 1–2 seconds only when \"${WakeWordModel.PHRASE}\" triggers.",
+                dotOn,
+            ) { on ->
+                dotOn = on
+                assistant.wakeIndicator = on
+            }
+
+            if (dotOn) {
+                InfoRow(
+                    "Dot over other apps",
+                    if (overlayAllowed) {
+                        "Allowed. Appears on your home screen and ordinary apps (suppressed on banking, lock, and PIN screens)."
+                    } else {
+                        "Optional. Allow Display over other apps so the tiny dot appears on your home screen and other apps."
+                    },
+                ) {
+                    if (overlayAllowed) {
+                        Pill("Allowed", ElectricCyan)
+                    } else {
+                        TextButton(
+                            onClick = {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                )
+                            },
+                        ) {
+                            Text("Allow", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
             }
 
             InfoRow(
