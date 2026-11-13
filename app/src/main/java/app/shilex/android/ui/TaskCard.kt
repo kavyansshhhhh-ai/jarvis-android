@@ -11,71 +11,135 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import app.shilex.android.task.Risk
 import app.shilex.android.task.Task
 import app.shilex.android.task.TaskState
 
-/** The task in progress: its steps as they really happened, and what is true now. */
+/**
+ * Liquid Glass Task Card: In-progress tasks, risk indicators, and real-time step execution.
+ */
 @Composable
 fun TaskCard(task: Task, modifier: Modifier = Modifier) {
     val (label, color) = stateLabel(task.state)
+    val shape = RoundedCornerShape(22.dp)
+
     Column(
         modifier
             .fillMaxWidth()
-            .background(Surface, MaterialTheme.shapes.medium)
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.medium)
+            .clip(shape)
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xD9141F38), // Translucent deep navy
+                        Color(0xB30E1626),
+                    ),
+                ),
+            )
+            .border(
+                1.dp,
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0x40FFFFFF),
+                        color.copy(alpha = 0.35f),
+                        Color(0x0AFFFFFF),
+                    ),
+                ),
+                shape,
+            )
             .padding(16.dp)
             .animateContentSize(),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(task.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            if (task.risk >= Risk.High) Pill(if (task.risk == Risk.Financial) "Payment: you" else "Needs you", Warning, Modifier.padding(end = 6.dp), dot = false)
+            Text(
+                task.title,
+                style = MaterialTheme.typography.titleMedium,
+                color = PureWhite,
+                modifier = Modifier.weight(1f),
+            )
+            if (task.risk >= Risk.High) {
+                Pill(
+                    text = if (task.risk == Risk.Financial) "Payment: you" else "Needs you",
+                    color = AmberWarning,
+                    modifier = Modifier.padding(end = 6.dp),
+                    dot = false,
+                )
+            }
             Pill(label, color)
         }
+
         task.steps.forEachIndexed { i, step ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(vertical = 1.dp),
+            ) {
                 StepMark(step.done)
                 Text(
                     "${i + 1}. ${step.label}",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = if (step.done == false) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                    color = if (step.done == false) CoralError else if (step.done == true) PureWhite else ElectricCyan,
                     modifier = Modifier.padding(start = 10.dp),
                 )
             }
         }
+
         if (task.detail.isNotEmpty()) {
-            Text(task.detail, style = MaterialTheme.typography.bodySmall, color = Muted)
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+                    .background(Color(0x1AFFFFFF), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            ) {
+                Text(task.detail, style = MaterialTheme.typography.bodySmall, color = Muted)
+            }
         }
     }
 }
 
 @Composable
 private fun StepMark(done: Boolean?) {
-    Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
+    Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) {
         when (done) {
-            null -> CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = Accent)
-            true -> Box(Modifier.size(10.dp).background(Accent, CircleShape))
-            false -> Box(Modifier.size(10.dp).background(MaterialTheme.colorScheme.error, CircleShape))
+            null -> CircularProgressIndicator(
+                Modifier.size(14.dp),
+                strokeWidth = 2.dp,
+                color = ElectricCyan,
+            )
+            true -> Box(
+                Modifier
+                    .size(9.dp)
+                    .background(ElectricCyan, CircleShape)
+                    .shadow(elevation = 2.dp, shape = CircleShape, ambientColor = ElectricCyan, spotColor = ElectricCyan),
+            )
+            false -> Box(
+                Modifier
+                    .size(9.dp)
+                    .background(CoralError, CircleShape),
+            )
         }
     }
 }
 
 @Composable
 private fun stateLabel(state: TaskState): Pair<String, Color> = when (state) {
-    TaskState.Understanding -> "Understanding" to Accent
-    TaskState.Planning -> "Needs your answer" to Warning
-    TaskState.AwaitingConfirmation -> "Awaiting your OK" to Warning
-    TaskState.Executing -> "Working" to Accent
-    TaskState.WaitingForYou -> "Your turn" to Warning
-    TaskState.Completed -> "Done" to Accent
-    TaskState.Failed -> "Didn't work" to MaterialTheme.colorScheme.error
+    TaskState.Understanding -> "Understanding" to ElectricCyan
+    TaskState.Planning -> "Needs your answer" to AmberWarning
+    TaskState.AwaitingConfirmation -> "Awaiting your OK" to AmberWarning
+    TaskState.Executing -> "Working" to ElectricCyan
+    TaskState.WaitingForYou -> "Your turn" to AmberWarning
+    TaskState.Completed -> "Done" to ElectricCyan
+    TaskState.Failed -> "Didn't work" to CoralError
 }

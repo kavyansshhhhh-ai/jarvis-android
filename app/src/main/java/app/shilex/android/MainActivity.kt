@@ -35,8 +35,8 @@ class MainActivity : ComponentActivity() {
         VoiceSession.get(this).screenVisible = true
         FloatingOrb.appVisible = true
         FloatingOrb.sync(this)
-        // After a reboot or a kill, the wake-word listener comes back when the app is opened.
-        if (VoiceService.wakeWordWanted(this)) VoiceService.start(this)
+        // After a reboot, permission change, or kill, sync/resume the wake-word listener when opened.
+        assistant.refreshWakeState()
     }
 
     // Leaving the screen no longer stops listening: VoiceService keeps the session going.

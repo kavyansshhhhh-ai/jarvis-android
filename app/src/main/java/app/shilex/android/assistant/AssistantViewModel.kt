@@ -13,6 +13,7 @@ import app.shilex.android.task.Task
 import app.shilex.android.task.TaskTracker
 import app.shilex.android.wake.VoiceProfile
 import app.shilex.android.wake.VoiceSetup
+import app.shilex.android.wake.WakeState
 import app.shilex.android.wake.WakeWordModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,8 +36,15 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The wake-word setting, live (Settings screen or the notification's Turn off). */
     val wakeWord: StateFlow<Boolean> = _wakeWord.asStateFlow()
+
+    /** Live background wake-word listener status. */
+    val wakeState: StateFlow<WakeState> = VoiceService.wakeState
+
     // Android holds preference listeners weakly, so keep this one referenced.
-    private val watcher = settings.watch { _wakeWord.value = settings.wakeWord }
+    private val watcher = settings.watch {
+        _wakeWord.value = settings.wakeWord
+        VoiceService.syncState(app)
+    }
 
     override fun onCleared() {
         settings.unwatch(watcher)
@@ -111,8 +119,11 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
 
     fun micUnavailable() = session.micUnavailable()
 
-    /** Only debug builds carry the (non-commercial) wake-word model. */
+    /** Offline wake-word detection is available whenever Vosk or ONNX models exist. */
     val wakeWordAvailable: Boolean = WakeWordModel.available(app)
+
+    /** True only when optional openWakeWord ONNX assets are present for voice-profile calibration. */
+    val wakeOnnxAvailable: Boolean = WakeWordModel.onnxAvailable(app)
 
     val wakeWordOn: Boolean get() = Settings(getApplication()).wakeWord
 
@@ -143,7 +154,16 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     /** Call while the screen is visible: turning it on starts the listening service. */
     fun setWakeWord(on: Boolean) {
         Settings(getApplication()).wakeWord = on
+        _wakeWord.value = on
         VoiceService.start(getApplication())
+    }
+
+    fun refreshWakeState() {
+        if (VoiceService.wakeWordWanted(getApplication())) {
+            VoiceService.start(getApplication())
+        } else {
+            VoiceService.syncState(getApplication())
+        }
     }
 
     private companion object {

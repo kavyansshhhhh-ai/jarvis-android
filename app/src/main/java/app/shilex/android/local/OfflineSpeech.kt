@@ -18,14 +18,22 @@ import java.util.concurrent.Executors
 /**
  * Hears one request with Vosk's small Indian-English model, entirely on the phone (no
  * network). The model ships in the APK's assets and is copied to app storage once, because
- * Vosk reads it from files.
+ * Vosk reads it from files. Also shares the loaded [Model] safely with the offline wake-word
+ * listener so only one copy lives in memory.
  */
 class OfflineSpeech private constructor(private val context: Context) {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "offline-speech") }
+    private val modelLock = Any()
     @Volatile private var model: Model? = null
+    @Volatile private var pinnedByWake = false
 
     fun available(): Boolean = runCatching { context.assets.list(ASSETS)?.isNotEmpty() == true }.getOrDefault(false)
+
+    /** Keeps the shared Vosk [Model] pinned in memory while background wake listening is active. */
+    fun pinForWake(pinned: Boolean) {
+        pinnedByWake = pinned
+    }
 
     /** Listens for up to [MAX_MS]; [done] gets up to three guesses (none if nothing was said). */
     fun listen(done: (List<String>) -> Unit) {
@@ -38,11 +46,14 @@ class OfflineSpeech private constructor(private val context: Context) {
         }
     }
 
-    /** Frees the model's memory (about the model's size); the next request loads it again. */
+    /** Frees the model's memory when idle, unless the wake-word listener is actively using it. */
     fun release() {
         worker.execute {
-            model?.close()
-            model = null
+            synchronized(modelLock) {
+                if (pinnedByWake) return@synchronized
+                model?.close()
+                model = null
+            }
         }
     }
 
@@ -89,9 +100,10 @@ class OfflineSpeech private constructor(private val context: Context) {
         }
     }
 
-    /** The loaded model (loads it if needed; blocks). */
-    @Synchronized
-    fun model(): Model = model ?: load().also { model = it }
+    /** The loaded model (loads it if needed; thread-safe and blocks until ready). */
+    fun model(): Model = synchronized(modelLock) {
+        model ?: load().also { model = it }
+    }
 
     private fun load(): Model {
         val dir = File(context.filesDir, MODEL_DIR)

@@ -17,6 +17,7 @@
     <!-- The floating orb over other apps; off until the user turns it on in Settings. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- Apps JARVIS hands work to (Android 11+ hides other apps unless listed). -->
     <queries>

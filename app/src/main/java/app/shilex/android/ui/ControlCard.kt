@@ -7,12 +7,16 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -22,6 +26,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -30,8 +37,7 @@ import app.shilex.android.Branding
 import app.shilex.android.control.ControlService
 
 /**
- * Asks the user to switch on phone control (Accessibility), with the prominent disclosure
- * Google requires and the "restricted settings" step sideloaded apps need on Android 13+.
+ * Liquid Glass Control Card: Informs and guides the user to grant phone control safely.
  */
 @Composable
 fun ControlCard(modifier: Modifier = Modifier, showWhenOn: Boolean = false) {
@@ -46,33 +52,59 @@ fun ControlCard(modifier: Modifier = Modifier, showWhenOn: Boolean = false) {
             InfoRow("Phone control", "On. Send, call, delete and pay still wait for your Allow.") {
                 TextButton(onClick = {
                     context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                }) { Text("Open") }
+                }) { Text("Open", color = ElectricCyan) }
             }
         }
         return
     }
 
+    val shape = RoundedCornerShape(22.dp)
+
     Column(
         modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
-            .padding(12.dp),
+            .clip(shape)
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xB315243B),
+                        Color(0x800D1524),
+                    ),
+                ),
+            )
+            .border(
+                1.dp,
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0x4D38E5FF),
+                        Color(0x1AFFFFFF),
+                    ),
+                ),
+                shape,
+            )
+            .padding(16.dp),
     ) {
-        Text("Phone control is off", color = Accent, fontSize = 15.sp)
+        Text("Phone control is off", color = ElectricCyan, style = MaterialTheme.typography.titleMedium)
         Text(
             "Turn it on so ${Branding.ASSISTANT_NAME} can read your screen and tap, type and scroll " +
                 "when you ask, e.g. play a song or reply in WhatsApp. Send, call, delete and pay " +
                 "always wait for you to tap Allow. Banking, UPI, password and Settings apps are never read.",
             color = Muted,
-            fontSize = 13.sp,
-            modifier = Modifier.padding(vertical = 6.dp),
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(vertical = 8.dp),
         )
         Row {
-            Button(onClick = {
-                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            }) { Text("Turn on") }
+            Button(
+                onClick = {
+                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ElectricCyan,
+                    contentColor = Color(0xFF001E26),
+                ),
+                shape = RoundedCornerShape(12.dp),
+            ) { Text("Turn on", fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold) }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                // Sideloaded apps: Android greys the switch out until "Allow restricted settings".
                 TextButton(onClick = {
                     context.startActivity(
                         Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
@@ -82,10 +114,11 @@ fun ControlCard(modifier: Modifier = Modifier, showWhenOn: Boolean = false) {
             }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Spacer(Modifier.height(6.dp))
             Text(
                 "If the switch is grey: App info → ⋮ (top right) → Allow restricted settings, then try again.",
                 color = Muted,
-                fontSize = 12.sp,
+                fontSize = 11.sp,
             )
         }
     }

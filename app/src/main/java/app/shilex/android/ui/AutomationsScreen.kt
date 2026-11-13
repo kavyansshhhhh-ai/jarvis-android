@@ -1,6 +1,8 @@
 package app.shilex.android.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -9,20 +11,23 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.dp
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import app.shilex.android.memory.MemoryRules
 import app.shilex.android.memory.MemoryStore
@@ -65,11 +70,20 @@ private val CLOUD = listOf(
 @Composable
 fun AutomationsScreen() {
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+        Modifier
+            .fillMaxSize()
+            .background(OledBlack)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        Column(Modifier.padding(top = 12.dp)) {
-            Text("Automations", style = MaterialTheme.typography.headlineSmall)
+        Column(Modifier.padding(top = 16.dp)) {
+            Text(
+                "Automations",
+                style = MaterialTheme.typography.headlineSmall,
+                color = PureWhite,
+                fontWeight = FontWeight.Bold,
+            )
             Text(
                 "Say \"${WakeWordModel.PHRASE}\", then the command. English, Hindi and Hinglish.",
                 style = MaterialTheme.typography.bodySmall,
@@ -78,10 +92,10 @@ fun AutomationsScreen() {
             )
         }
         Routines()
-        Group("On this phone", "Works without internet and doesn't use your Gemini key.", Accent, "Local", LOCAL)
-        Group("Tasks with your OK", "Gemini plans them; you finish anything that sends, calls or pays.", Warning, "Needs you", TASKS)
-        Group("With Gemini", "Needs internet; uses your Gemini key.", Warning, "Gemini", CLOUD)
-        Spacer(Modifier.height(8.dp))
+        Group("On this phone", "Works without internet and doesn't use your Gemini key.", ElectricCyan, "Local", LOCAL)
+        Group("Tasks with your OK", "Gemini plans them; you finish anything that sends, calls or pays.", AmberWarning, "Needs you", TASKS)
+        Group("With Gemini", "Needs internet; uses your Gemini key.", AmberWarning, "Gemini", CLOUD)
+        Spacer(Modifier.height(16.dp))
     }
 }
 
@@ -95,21 +109,39 @@ private fun Routines() {
         routines = store.routines()
         onPauseOrDispose { }
     }
-    Section(null) {
-        Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Routines", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+
+    GlassCard(modifier = Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Routines",
+                style = MaterialTheme.typography.titleLarge,
+                color = PureWhite,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            Pill("Voice or Tap", ElectricCyan, dot = false)
         }
         Text(
             "Say a routine's name to run its steps. Make one by voice: \"make a routine called good night: alarm at 6:30, what's on tomorrow\".",
             style = MaterialTheme.typography.bodySmall,
             color = Muted,
-            modifier = Modifier.padding(top = 2.dp, bottom = 6.dp),
+            modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
         )
-        routines.forEach { r ->
+        routines.forEachIndexed { idx, r ->
             InfoRow(r.name, r.steps.joinToString(" · ")) {
                 if (r !== MemoryRules.GOOD_MORNING) {
-                    TextButton(onClick = { store.deleteRoutine(r.name).also { routines = store.routines() } }) { Text("Delete") }
+                    TextButton(onClick = { store.deleteRoutine(r.name).also { routines = store.routines() } }) {
+                        Text("Delete", color = CoralError)
+                    }
                 }
+            }
+            if (idx < routines.lastIndex) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(0.6.dp)
+                        .background(Color(0x1AFFFFFF)),
+                )
             }
         }
     }
@@ -117,12 +149,28 @@ private fun Routines() {
 
 @Composable
 private fun Group(title: String, detail: String, color: Color, badge: String, commands: List<Command>) {
-    Section(null) {
-        Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+    GlassCard(modifier = Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleLarge,
+                color = PureWhite,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
             Pill(badge, color)
         }
-        Text(detail, style = MaterialTheme.typography.bodySmall, color = Muted, modifier = Modifier.padding(top = 2.dp, bottom = 6.dp))
-        commands.forEach { InfoRow(it.title, it.examples) }
+        Text(detail, style = MaterialTheme.typography.bodySmall, color = Muted, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
+        commands.forEachIndexed { idx, cmd ->
+            InfoRow(cmd.title, cmd.examples)
+            if (idx < commands.lastIndex) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(0.6.dp)
+                        .background(Color(0x1AFFFFFF)),
+                )
+            }
+        }
     }
 }

@@ -227,8 +227,14 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
     private fun connect() {
         val key = vault.read(KeyVault.GEMINI_KEY)
         if (key == null) {
-            wanted = false
-            _state.update { it.copy(hasKey = false, phase = Phase.Off) }
+            stop("no gemini key")
+            _state.update {
+                it.copy(
+                    hasKey = false,
+                    phase = Phase.Off,
+                    problem = "Add your Gemini API key in Settings to handle cloud requests.",
+                )
+            }
             return
         }
         _state.update { it.copy(phase = Phase.Connecting, problem = null) }

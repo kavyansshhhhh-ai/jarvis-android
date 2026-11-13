@@ -1,11 +1,16 @@
 package app.shilex.android.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -17,6 +22,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.shilex.android.wake.VoiceProfile
@@ -24,7 +32,9 @@ import app.shilex.android.wake.VoiceSetup
 import app.shilex.android.wake.WakeWordModel
 import kotlinx.coroutines.launch
 
-/** "Teach my voice": five recordings of the wake phrase, kept only on this phone. */
+/**
+ * Liquid Glass Voice Setup Dialog: "Teach my voice" calibration.
+ */
 @Composable
 fun VoiceSetupDialog(
     record: suspend (speakNow: () -> Unit) -> VoiceSetup.Sample,
@@ -39,49 +49,81 @@ fun VoiceSetupDialog(
 
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("Teach ${WakeWordModel.PHRASE} your voice") },
+        containerColor = Color(0xF20D1525),
+        shape = RoundedCornerShape(24.dp),
+        title = {
+            Text(
+                "Teach ${WakeWordModel.PHRASE} your voice",
+                style = MaterialTheme.typography.titleMedium,
+                color = PureWhite,
+            )
+        },
         text = {
             Column {
-                Text("Sample ${minOf(samples.size + 1, VoiceProfile.SAMPLES)} of ${VoiceProfile.SAMPLES}", color = Accent)
-                Text(status, modifier = Modifier.padding(top = 8.dp))
+                Text(
+                    "Sample ${minOf(samples.size + 1, VoiceProfile.SAMPLES)} of ${VoiceProfile.SAMPLES}",
+                    color = ElectricCyan,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    status,
+                    color = PureWhite,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
                 Text(
                     "Kept only on this phone as speech features, not recordings. You can forget it any time.",
                     color = Muted,
+                    style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(top = 12.dp),
                 )
             }
         },
         confirmButton = {
             if (done) {
-                Button(onClick = {
-                    onSave(samples.toList())
-                    onDismiss()
-                }) { Text("Save") }
+                Button(
+                    onClick = {
+                        onSave(samples.toList())
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = Color(0xFF001E26)),
+                    shape = RoundedCornerShape(12.dp),
+                ) { Text("Save", fontWeight = FontWeight.SemiBold) }
             } else {
-                Button(enabled = !busy, onClick = {
-                    busy = true
-                    status = "Get ready…"
-                    scope.launch {
-                        val sample = record { status = "Say \"${WakeWordModel.PHRASE}\" now" }
-                        busy = false
-                        status = when (sample) {
-                            is VoiceSetup.Sample.Ok -> {
-                                samples += sample.window
-                                if (samples.size >= VoiceProfile.SAMPLES) {
-                                    "Got all ${VoiceProfile.SAMPLES}. Tap Save."
-                                } else {
-                                    "Got it. Tap Record for the next one."
+                Button(
+                    enabled = !busy,
+                    onClick = {
+                        busy = true
+                        status = "Get ready…"
+                        scope.launch {
+                            val sample = record { status = "Say \"${WakeWordModel.PHRASE}\" now" }
+                            busy = false
+                            status = when (sample) {
+                                is VoiceSetup.Sample.Ok -> {
+                                    samples += sample.window
+                                    if (samples.size >= VoiceProfile.SAMPLES) {
+                                        "Got all ${VoiceProfile.SAMPLES}. Tap Save."
+                                    } else {
+                                        "Got it. Tap Record for the next one."
+                                    }
                                 }
+                                is VoiceSetup.Sample.Problem -> sample.message
                             }
-                            is VoiceSetup.Sample.Problem -> sample.message
                         }
-                    }
-                }) { Text(if (busy) "Listening…" else "Record") }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = Color(0xFF001E26)),
+                    shape = RoundedCornerShape(12.dp),
+                ) { Text(if (busy) "Listening…" else "Record", fontWeight = FontWeight.SemiBold) }
             }
         },
         dismissButton = {
-            TextButton(enabled = !busy, onClick = onDismiss) { Text("Cancel") }
+            TextButton(enabled = !busy, onClick = onDismiss) { Text("Cancel", color = Muted) }
         },
+        modifier = Modifier.border(
+            1.dp,
+            Brush.verticalGradient(listOf(Color(0x40FFFFFF), Color(0x2638E5FF))),
+            RoundedCornerShape(24.dp),
+        ),
     )
 }
 
@@ -97,12 +139,14 @@ fun VoiceSetupRow(
     var open by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(
-            if (hasVoice) "Your voice is saved." else "Not waking for you? Teach it your voice.",
+            if (hasVoice) "Your voice profile is active." else "Not waking for you? Teach it your voice.",
             color = Muted,
             fontSize = 13.sp,
             modifier = Modifier.weight(1f),
         )
-        TextButton(onClick = { open = true }) { Text(if (hasVoice) "Redo" else "Teach my voice", color = Accent) }
+        TextButton(onClick = { open = true }) {
+            Text(if (hasVoice) "Redo" else "Teach my voice", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
+        }
         if (hasVoice) {
             TextButton(onClick = {
                 onForget()

@@ -95,20 +95,26 @@ class LocalTurn private constructor(private val context: Context) {
             }
             return
         }
-        val created = if (kind == "on-device" && Build.VERSION.SDK_INT >= 31) {
-            SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-        } else {
-            SpeechRecognizer.createSpeechRecognizer(context)
+        val ok = runCatching {
+            val created = if (kind == "on-device" && Build.VERSION.SDK_INT >= 31) {
+                SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+            } else {
+                SpeechRecognizer.createSpeechRecognizer(context)
+            }
+            recognizer = created
+            created.setRecognitionListener(Listener())
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
+                .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            Diag.i("local: listening ($kind speech)")
+            created.startListening(intent)
+        }.isSuccess
+        if (!ok) {
+            closeRecognizer()
+            if (offline.available()) listen("offline") else handOff(null)
         }
-        recognizer = created
-        created.setRecognitionListener(Listener())
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
-            .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-            .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-        Diag.i("local: listening ($kind speech)")
-        created.startListening(intent)
     }
 
     private inner class Listener : RecognitionListener {
@@ -127,9 +133,16 @@ class LocalTurn private constructor(private val context: Context) {
                     finish()
                 }
                 else -> {
-                    // The recogniser can't run (no offline pack, busy, no network): Gemini hears it instead.
-                    Diag.w("local: speech error $error, using Gemini")
-                    handOff(null)
+                    // The recogniser can't run in background or offline pack missing: try Vosk offline first, else Gemini.
+                    Diag.w("local: speech error $error")
+                    if (offline.available()) {
+                        offline.listen { texts ->
+                            heardAt = SystemClock.elapsedRealtime()
+                            if (texts.isEmpty()) finish() else handle(texts)
+                        }
+                    } else {
+                        handOff(null)
+                    }
                 }
             }
         }
@@ -247,7 +260,7 @@ class LocalTurn private constructor(private val context: Context) {
             LocalCommand.Stop -> "Stop"
         }
 
-        private const val MIC_HANDOVER_MS = 300L
+        private const val MIC_HANDOVER_MS = 160L
         private const val VOICE_IDLE_MS = 5 * 60_000L // keeps the speech model and voice loaded
         private val SHUTDOWN = Any()
 

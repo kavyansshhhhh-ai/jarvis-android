@@ -5,6 +5,7 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.TensorInfo
 import android.content.Context
+import app.shilex.android.local.OfflineSpeech
 import java.nio.FloatBuffer
 
 /**
@@ -12,8 +13,8 @@ import java.nio.FloatBuffer
  * frames become one 96-number speech embedding, and the last 16 embeddings give the
  * wake-word score (0..1). Nothing leaves the phone.
  *
- * The models live in the debug build's assets only: the pretrained "hey jarvis" model is
- * CC BY-NC-SA 4.0 (non-commercial), so it must not ship in a release (docs/ANDROID.md).
+ * When openWakeWord's optional debug ONNX models are not bundled, wake-word detection uses
+ * the bundled offline Vosk keyword spotter ([OfflineSpeech]) in [WakeListener].
  */
 class WakeWordModel(context: Context) : AutoCloseable {
     private val env = OrtEnvironment.getEnvironment()
@@ -125,7 +126,8 @@ class WakeWordModel(context: Context) : AutoCloseable {
 
     companion object {
         const val CHUNK = 1280 // 80 ms at 16 kHz
-        const val PHRASE = "Hey Jarvis"
+        const val PHRASE = "Jarvis"
+        const val ALT_PHRASE = "Hey Jarvis"
         private const val CONTEXT = 480
         private const val MEL_BINS = 32
         private const val MEL_WINDOW = 76
@@ -134,8 +136,15 @@ class WakeWordModel(context: Context) : AutoCloseable {
         private const val DIR = "wake"
         private const val WORD_MODEL = "hey_jarvis_v0.1.onnx"
 
-        /** False in builds without the models (release builds). */
+        /** True only when the optional openWakeWord ONNX models are bundled in assets. */
+        fun onnxAvailable(context: Context): Boolean =
+            runCatching {
+                val files = context.assets.list(DIR)?.toSet().orEmpty()
+                WORD_MODEL in files && "melspectrogram.onnx" in files && "embedding_model.onnx" in files
+            }.getOrDefault(false)
+
+        /** True whenever any offline wake-word detector (bundled Vosk or ONNX) is available. */
         fun available(context: Context): Boolean =
-            runCatching { context.assets.list(DIR)?.contains(WORD_MODEL) == true }.getOrDefault(false)
+            OfflineSpeech.get(context).available() || onnxAvailable(context)
     }
 }

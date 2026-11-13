@@ -1,0 +1,6 @@
+{
+  "name": "JARVIS Voice Assistant",
+  "description": "Voice and AI assistant for English, Hindi, and Hinglish with local offline-first tools, safety controls, and Gemini intelligence.",
+  "permissions": [],
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

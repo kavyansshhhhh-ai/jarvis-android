@@ -1,7 +1,12 @@
 package app.shilex.android.ui
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,65 +14,182 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
-/** A titled group of rows on a raised card. */
+/** A translucent Liquid Glass card container with specular highlight rim. */
 @Composable
-fun Section(title: String?, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+fun GlassCard(
+    modifier: Modifier = Modifier,
+    shape: RoundedCornerShape = RoundedCornerShape(22.dp),
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(
+        modifier = modifier
+            .clip(shape)
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xB3141F36), // translucent dark navy/blue
+                        Color(0x800B111F),
+                    ),
+                ),
+            )
+            .border(
+                1.dp,
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0x40FFFFFF), // top specular light reflection
+                        Color(0x2638E5FF), // subtle cyan refractor
+                        Color(0x0AFFFFFF),
+                    ),
+                ),
+                shape,
+            )
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        content = content,
+    )
+}
+
+/** A titled group of rows inside a floating Liquid Glass card. */
+@Composable
+fun Section(
+    title: String?,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     Column(modifier.fillMaxWidth()) {
         if (title != null) {
             Text(
                 title.uppercase(),
                 style = MaterialTheme.typography.titleSmall,
                 color = Muted,
-                modifier = Modifier.padding(start = 4.dp, bottom = 8.dp),
+                letterSpacing = 0.8.sp,
+                modifier = Modifier.padding(start = 6.dp, bottom = 8.dp),
             )
         }
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .background(Surface, MaterialTheme.shapes.medium)
-                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.medium)
-                .padding(horizontal = 16.dp, vertical = 6.dp),
-            content = content,
-        )
+        GlassCard(modifier = Modifier.fillMaxWidth(), content = content)
     }
 }
 
-/** One setting: a title, a plain-language explanation and a switch. */
+/** An iOS-styled Liquid Glass switch row with smooth animated thumb and gradient track. */
 @Composable
-fun SwitchRow(title: String, detail: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+fun SwitchRow(
+    title: String,
+    detail: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                enabled = enabled,
+            ) { onChange(!checked) }
+            .padding(vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(title, style = MaterialTheme.typography.titleMedium, color = if (enabled) PureWhite else Muted)
             Text(detail, style = MaterialTheme.typography.bodySmall, color = Muted, modifier = Modifier.padding(top = 2.dp))
         }
-        Spacer(Modifier.width(12.dp))
-        Switch(checked = checked, enabled = enabled, onCheckedChange = onChange)
+        Spacer(Modifier.width(14.dp))
+        IosGlassSwitch(checked = checked, enabled = enabled, onCheckedChange = onChange)
+    }
+}
+
+/** iOS-style Liquid Glass toggle switch. */
+@Composable
+fun IosGlassSwitch(
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    val thumbOffset by animateDpAsState(
+        targetValue = if (checked) 22.dp else 2.dp,
+        animationSpec = tween(durationMillis = 220),
+        label = "switchThumb",
+    )
+    val trackBgColor by animateColorAsState(
+        targetValue = if (checked) ElectricCyan else Color(0x33FFFFFF),
+        animationSpec = tween(durationMillis = 220),
+        label = "switchTrackColor",
+    )
+
+    Box(
+        modifier = Modifier
+            .size(width = 50.dp, height = 30.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                if (checked) {
+                    Brush.horizontalGradient(listOf(ElectricCyan, NeonViolet))
+                } else {
+                    SolidColor(Color(0x26FFFFFF))
+                },
+            )
+            .border(
+                1.dp,
+                if (checked) Color(0x6638E5FF) else Color(0x26FFFFFF),
+                RoundedCornerShape(16.dp),
+            )
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                enabled = enabled,
+            ) { onCheckedChange(!checked) },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        // Glowing thumb
+        Box(
+            modifier = Modifier
+                .offset(x = thumbOffset)
+                .size(26.dp)
+                .shadow(elevation = 3.dp, shape = CircleShape)
+                .background(Color.White, CircleShape)
+                .border(0.5.dp, Color(0x33000000), CircleShape),
+        )
     }
 }
 
 /** A row of text with an optional trailing control. */
 @Composable
-fun InfoRow(title: String, detail: String, trailing: @Composable (() -> Unit)? = null) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+fun InfoRow(
+    title: String,
+    detail: String,
+    trailing: @Composable (() -> Unit)? = null,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(title, style = MaterialTheme.typography.titleMedium, color = PureWhite)
             Text(detail, style = MaterialTheme.typography.bodySmall, color = Muted, modifier = Modifier.padding(top = 2.dp))
         }
         if (trailing != null) {
@@ -77,25 +199,60 @@ fun InfoRow(title: String, detail: String, trailing: @Composable (() -> Unit)? =
     }
 }
 
-/** A small rounded label, e.g. "Standby" or "On phone". */
+/** A modern Liquid Glass pill badge with glowing dot and translucent border. */
 @Composable
-fun Pill(text: String, color: Color, modifier: Modifier = Modifier, dot: Boolean = true) {
+fun Pill(
+    text: String,
+    color: Color,
+    modifier: Modifier = Modifier,
+    dot: Boolean = true,
+) {
     Row(
         modifier
-            .background(color.copy(alpha = 0.12f), RoundedCornerShape(50))
-            .padding(horizontal = 10.dp, vertical = 5.dp),
+            .background(
+                Brush.horizontalGradient(
+                    listOf(
+                        color.copy(alpha = 0.16f),
+                        color.copy(alpha = 0.08f),
+                    ),
+                ),
+                RoundedCornerShape(50),
+            )
+            .border(
+                0.8.dp,
+                Brush.horizontalGradient(
+                    listOf(
+                        color.copy(alpha = 0.45f),
+                        color.copy(alpha = 0.15f),
+                    ),
+                ),
+                RoundedCornerShape(50),
+            )
+            .padding(horizontal = 11.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        if (dot) Box(Modifier.size(6.dp).background(color, CircleShape))
-        Text(text, style = MaterialTheme.typography.labelMedium, color = color)
+        if (dot) {
+            Box(
+                Modifier
+                    .size(6.dp)
+                    .background(color, CircleShape)
+                    .shadow(elevation = 2.dp, shape = CircleShape, ambientColor = color, spotColor = color),
+            )
+        }
+        Text(
+            text,
+            style = MaterialTheme.typography.labelMedium,
+            color = color,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+        )
     }
 }
 
-/** Material's microphone glyph (not in the core icon set). */
+/** Material microphone glyph. */
 val MicIcon: ImageVector by lazy {
     ImageVector.Builder("Mic", 24.dp, 24.dp, 24f, 24f).apply {
-        path(fill = SolidColor(Color.Black)) {
+        path(fill = SolidColor(Color.White)) {
             moveTo(12f, 14f)
             curveToRelative(1.66f, 0f, 2.99f, -1.34f, 2.99f, -3f)
             lineTo(15f, 5f)
