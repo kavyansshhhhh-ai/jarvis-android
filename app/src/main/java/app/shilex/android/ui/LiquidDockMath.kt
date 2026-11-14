@@ -178,8 +178,8 @@ class DockGestureSession(
                 cancelled = true
                 return MoveOutcome.Cancelled
             }
-            // Responsive horizontal threshold to start continuous tracking
-            if (abs(dx) > touchSlopPx * 0.45f) {
+            // Responsive horizontal threshold to start continuous tracking cleanly
+            if (abs(dx) > touchSlopPx * 0.35f) {
                 draggingHorizontally = true
             } else {
                 return MoveOutcome.Pending

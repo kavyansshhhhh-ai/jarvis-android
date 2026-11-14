@@ -71,7 +71,6 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.shilex.android.Branding
 import app.shilex.android.assistant.AssistantViewModel
-import app.shilex.android.audio.VoiceGender
 import app.shilex.android.data.Settings as AppSettings
 import app.shilex.android.memory.MemoryStore
 import app.shilex.android.orb.FloatingOrb
@@ -85,32 +84,42 @@ import app.shilex.android.wake.WakeState
 import app.shilex.android.wake.WakeWordModel
 import kotlin.math.roundToInt
 
+private enum class SettingsFolder {
+    Main,
+    Permissions,
+    JarvisVoice,
+}
+
 /**
- * AMOLED Smoked Liquid Glass Settings Screen with unified Permissions folder sub-screen
- * and continuous live Wake Dot size slider.
+ * AMOLED Smoked Liquid Glass Settings Screen with unified Permissions & JARVIS VOICE
+ * folder sub-screens and continuous live Wake Dot size slider.
  */
 @Composable
 fun SettingsScreen(assistant: AssistantViewModel) {
-    var showPermissionsScreen by rememberSaveable { mutableStateOf(false) }
-    BackHandler(enabled = showPermissionsScreen) { showPermissionsScreen = false }
+    var activeFolder by rememberSaveable { mutableStateOf(SettingsFolder.Main) }
+    BackHandler(enabled = activeFolder != SettingsFolder.Main) { activeFolder = SettingsFolder.Main }
 
     AnimatedContent(
-        targetState = showPermissionsScreen,
+        targetState = activeFolder,
         transitionSpec = {
-            if (targetState) {
+            if (targetState != SettingsFolder.Main) {
                 (slideInHorizontally { it / 6 } + fadeIn()) togetherWith (slideOutHorizontally { -it / 10 } + fadeOut())
             } else {
                 (slideInHorizontally { -it / 6 } + fadeIn()) togetherWith (slideOutHorizontally { it / 10 } + fadeOut())
             }
         },
-        label = "settingsPermissionsNav",
-    ) { inPermissions ->
-        if (inPermissions) {
-            PermissionsSubScreen(onBack = { showPermissionsScreen = false })
-        } else {
-            SettingsMainContent(
+        label = "settingsFolderNav",
+    ) { folder ->
+        when (folder) {
+            SettingsFolder.Permissions -> PermissionsSubScreen(onBack = { activeFolder = SettingsFolder.Main })
+            SettingsFolder.JarvisVoice -> JarvisVoiceSubScreen(
                 assistant = assistant,
-                onOpenPermissions = { showPermissionsScreen = true },
+                onBack = { activeFolder = SettingsFolder.Main },
+            )
+            SettingsFolder.Main -> SettingsMainContent(
+                assistant = assistant,
+                onOpenPermissions = { activeFolder = SettingsFolder.Permissions },
+                onOpenJarvisVoice = { activeFolder = SettingsFolder.JarvisVoice },
             )
         }
     }
@@ -180,6 +189,7 @@ private fun PermissionsSubScreen(onBack: () -> Unit) {
 private fun SettingsMainContent(
     assistant: AssistantViewModel,
     onOpenPermissions: () -> Unit,
+    onOpenJarvisVoice: () -> Unit,
 ) {
     val context = LocalContext.current
     val activity = remember(context) { PermissionRegistry.findActivity(context) }
@@ -365,6 +375,61 @@ private fun SettingsMainContent(
             }
         }
 
+        // Dedicated JARVIS VOICE Folder (opens clean Female Voices / Male Voices folder)
+        val hindiCatalog by assistant.speaker.hindiCatalog.collectAsStateWithLifecycle()
+        val selectedVoiceId = assistant.ttsVoiceId
+        val activeVoiceName = remember(selectedVoiceId, hindiCatalog) {
+            if (selectedVoiceId == null) {
+                "Default Hindi voice"
+            } else {
+                (hindiCatalog.femaleVoices + hindiCatalog.maleVoices)
+                    .firstOrNull { it.id == selectedVoiceId }
+                    ?.displayName
+                    ?: "Custom Hindi voice"
+            }
+        }
+        Section("JARVIS VOICE") {
+            val interaction = remember { MutableInteractionSource() }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .glassPressScale(interaction)
+                    .clickable(interactionSource = interaction, indication = null, onClick = onOpenJarvisVoice)
+                    .padding(vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                GlassRowIcon(
+                    icon = Icons.Filled.Star,
+                    tint = ElectricCyan,
+                    accentGlow = true,
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "JARVIS VOICE",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = PureWhite,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = "Female Voices & Male Voices • $activeVoiceName",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Muted,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Pill("Hindi", ElectricCyan, dot = false)
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = "Open JARVIS VOICE",
+                    tint = Muted,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+
         Section("Personal Profile") {
             val songSummary = if (profile.favoriteSongs.isEmpty()) "No favourite songs saved" else profile.favoriteSongs.joinToString(", ")
             val musicAppText = profile.preferredMusicApp.ifBlank { "Default (YouTube Music / Spotify)" }
@@ -431,69 +496,6 @@ private fun SettingsMainContent(
                 assistant.waveToStop = it
             }
         }
-
-        val speaker = remember { assistant.speaker }
-        val hindiCatalog by speaker.hindiCatalog.collectAsStateWithLifecycle()
-        val engineDiagnostics by speaker.engineDiagnostics.collectAsStateWithLifecycle()
-        val isTtsReady by speaker.isTtsReadyState.collectAsStateWithLifecycle()
-        val ttsError by speaker.ttsError.collectAsStateWithLifecycle()
-        val previewingVoiceId by speaker.previewingVoiceId.collectAsStateWithLifecycle()
-
-        var speakResponses by remember { mutableStateOf(assistant.speakResponses) }
-        var ttsVoiceId by remember { mutableStateOf(assistant.ttsVoiceId) }
-        var speechRate by remember { mutableFloatStateOf(assistant.ttsSpeechRate) }
-        var pitch by remember { mutableFloatStateOf(assistant.ttsPitch) }
-        var genderFilter by remember { mutableStateOf(assistant.ttsGenderFilter) }
-
-        VoiceSettingsSection(
-            assistant = assistant,
-            speakResponses = speakResponses,
-            onSpeakResponsesChanged = {
-                speakResponses = it
-                assistant.speakResponses = it
-            },
-            ttsVoiceId = ttsVoiceId,
-            onVoiceSelected = { id ->
-                ttsVoiceId = id
-                assistant.ttsVoiceId = id
-            },
-            speechRate = speechRate,
-            onSpeechRateChanged = { rate ->
-                speechRate = rate
-                assistant.ttsSpeechRate = rate
-            },
-            pitch = pitch,
-            onPitchChanged = { p ->
-                pitch = p
-                assistant.ttsPitch = p
-            },
-            genderFilter = genderFilter,
-            onGenderFilterChanged = { filter ->
-                genderFilter = filter
-                assistant.ttsGenderFilter = filter
-            },
-            hindiCatalog = hindiCatalog,
-            engineDiagnostics = engineDiagnostics,
-            isTtsReady = isTtsReady,
-            ttsError = ttsError,
-            previewingVoiceId = previewingVoiceId,
-            onPreviewVoice = { id -> speaker.previewVoice(id) },
-            onStopPreview = { speaker.stopPreview() },
-            onClassifyVoice = { id, gender ->
-                assistant.setManualVoiceGender(id, gender)
-                if (gender == VoiceGender.Female || gender == VoiceGender.Male) {
-                    genderFilter = gender.name.uppercase()
-                    assistant.ttsGenderFilter = genderFilter
-                }
-            },
-            onInstallHindiVoiceData = { speaker.stopPreview() },
-            onRestoreDefault = {
-                assistant.restoreDefaultTtsVoice()
-                ttsVoiceId = null
-                speechRate = 1.0f
-                pitch = 1.0f
-            },
-        )
 
         Section("Floating Presence") {
             val prefs = remember { AppSettings(context) }

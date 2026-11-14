@@ -142,7 +142,8 @@ class Speaker(private val context: Context? = null) {
                     } else {
                         ttsReady = false
                         _isTtsReadyState.value = false
-                        _ttsError.value = "TTS engine initialization failed (status code: $status)"
+                        Diag.w("tts: init failed with status $status")
+                        _ttsError.value = "Voice playback is unavailable on this phone."
                         drainSpeechQueueOnError()
                         callbacks.forEach { it(false) }
                     }
@@ -154,7 +155,8 @@ class Speaker(private val context: Context? = null) {
                 }
                 ttsReady = false
                 _isTtsReadyState.value = false
-                _ttsError.value = "Failed to start TextToSpeech: ${e.message}"
+                Diag.w("tts: start exception: ${e.message}")
+                _ttsError.value = "Voice playback could not start on this phone."
                 drainSpeechQueueOnError()
                 callbacks.forEach { it(false) }
             }
@@ -182,13 +184,13 @@ class Speaker(private val context: Context? = null) {
 
                 @Deprecated("Deprecated in Java")
                 override fun onError(utteranceId: String?) {
-                    _ttsError.value = "Text-to-Speech could not play audio on this device."
+                    _ttsError.value = "Voice playback could not start on this phone."
                     handleUtteranceFinished(utteranceId)
                 }
 
                 override fun onError(utteranceId: String?, errorCode: Int) {
                     Diag.w("tts: error $errorCode on utterance $utteranceId")
-                    _ttsError.value = "Text-to-Speech playback error (code $errorCode). Check Android TTS settings."
+                    _ttsError.value = "Voice playback failed on this phone."
                     handleUtteranceFinished(utteranceId)
                 }
             })
@@ -229,11 +231,9 @@ class Speaker(private val context: Context? = null) {
         val rawVoices = runCatching { engine.voices }.getOrNull().orEmpty()
         val activePkg = runCatching { engine.defaultEngine }.getOrNull()
         val engines = runCatching { engine.engines }.getOrNull().orEmpty()
-        val activeEngineInfo = engines.firstOrNull { it.name == activePkg }
         val googleInstalled = engines.any { it.name == VoiceClassifier.GOOGLE_TTS_PACKAGE }
         val hiAvailability = runCatching { engine.isLanguageAvailable(Locale("hi", "IN")) }.getOrNull()
 
-        val manualOverrides = appContext?.let { Settings(it).ttsManualVoiceGenders } ?: emptyMap()
         val mapped = rawVoices.map { v ->
             RawTtsVoice(
                 id = v.name,
@@ -244,12 +244,11 @@ class Speaker(private val context: Context? = null) {
             )
         }
 
-        val catalog = VoiceClassifier.buildHindiCatalog(mapped, manualOverrides)
+        val catalog = VoiceClassifier.buildHindiCatalog(mapped)
         _hindiCatalog.value = catalog
         _availableVoices.value = catalog.femaleVoices + catalog.maleVoices
         _engineDiagnostics.value = TtsEngineDiagnostics(
             activeEnginePackage = activePkg,
-            activeEngineLabel = activeEngineInfo?.label ?: activePkg,
             isGoogleSpeechServicesActive = activePkg == VoiceClassifier.GOOGLE_TTS_PACKAGE,
             isGoogleSpeechServicesInstalled = googleInstalled,
             hindiLanguageAvailability = hiAvailability,
@@ -339,7 +338,7 @@ class Speaker(private val context: Context? = null) {
             if (hiResult == TextToSpeech.LANG_MISSING_DATA || hiResult == TextToSpeech.LANG_NOT_SUPPORTED) {
                 val fallbackResult = engine.setLanguage(Locale.getDefault())
                 if (fallbackResult == TextToSpeech.LANG_MISSING_DATA || fallbackResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    _ttsError.value = "Hindi (hi-IN) TTS data is not installed. Tap Install Hindi Voice Data to download it."
+                    _ttsError.value = "Hindi voices are not installed on this phone yet."
                 }
             }
         }
@@ -415,7 +414,7 @@ class Speaker(private val context: Context? = null) {
         val result = engine.speak(cleaned, queueMode, null, utteranceId)
         if (result != TextToSpeech.SUCCESS) {
             Diag.w("tts: speak failed with code $result")
-            _ttsError.value = "Text-to-Speech failed to speak (code $result)."
+            _ttsError.value = "Voice playback could not speak this reply."
             _isSpeaking.value = false
             AudioPlaybackState.onLocalTtsEnded()
             abandonAudioFocus()
@@ -469,7 +468,8 @@ class Speaker(private val context: Context? = null) {
 
         val res = engine.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
         if (res != TextToSpeech.SUCCESS) {
-            _ttsError.value = "Voice preview failed (code $res). Voice data may not be downloaded."
+            Diag.w("tts: preview failed with code $res")
+            _ttsError.value = "Could not play sample. Make sure this Hindi voice is downloaded."
             _previewingVoiceId.value = null
             _isSpeaking.value = false
             AudioPlaybackState.onLocalTtsEnded()

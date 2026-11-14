@@ -6,7 +6,6 @@ import android.net.Uri
 import android.os.PowerManager
 import androidx.lifecycle.AndroidViewModel
 import app.shilex.android.audio.Speaker
-import app.shilex.android.audio.VoiceGender
 import app.shilex.android.data.PersonalProfile
 import app.shilex.android.data.PersonalProfileStore
 import app.shilex.android.data.Settings
@@ -174,18 +173,6 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     var ttsGenderFilter: String
         get() = settings.ttsGenderFilter
         set(value) { settings.ttsGenderFilter = Settings.normalizeGenderFilter(value) }
-
-    fun setManualVoiceGender(voiceId: String, gender: VoiceGender) {
-        settings.setManualVoiceGender(voiceId, gender)
-        speaker.discoverVoices()
-        speaker.applySavedVoiceAndSettings()
-    }
-
-    fun clearManualVoiceGenders() {
-        settings.clearManualVoiceGenders()
-        speaker.discoverVoices()
-        speaker.applySavedVoiceAndSettings()
-    }
 
     fun refreshTtsVoices() {
         speaker.discoverVoices()
