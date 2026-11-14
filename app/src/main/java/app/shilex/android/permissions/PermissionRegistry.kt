@@ -433,8 +433,11 @@ object PermissionRegistry {
             context.getSystemService(PowerManager::class.java)
                 ?.isIgnoringBatteryOptimizations(context.packageName) == true
         PermissionId.ExactAlarms ->
-            sdkInt < Build.VERSION_CODES.S ||
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && sdkInt >= Build.VERSION_CODES.S) {
                 context.getSystemService(AlarmManager::class.java)?.canScheduleExactAlarms() == true
+            } else {
+                true
+            }
         PermissionId.FilesAndPhotosPicker -> true
     }
 

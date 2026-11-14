@@ -155,6 +155,137 @@ class LiquidDockTest {
     }
 
     @Test
+    fun stationaryHoldActivatesDragAtHeldTabAndGlidesCleanly() {
+        // User touches down on Tab 2 (Activity, slot [400..600]) and holds stationary
+        val touchX = innerInsetPx + 500f
+        val session = DockGestureSession(
+            downX = touchX,
+            downY = 60f,
+            initialSelectedTab = 0,
+            slotWidthPx = slotWidthPx,
+            innerInsetPx = innerInsetPx,
+            tabCount = tabCount,
+            touchSlopPx = touchSlopPx,
+        )
+
+        assertEquals(2, session.downTab)
+        assertFalse(session.isHoldActivated)
+        assertFalse(session.draggingHorizontally)
+
+        // Stationary hold timeout expires -> onHoldActivated triggers
+        val heldTab = session.onHoldActivated()
+        assertEquals(2, heldTab)
+        assertTrue(session.isHoldActivated)
+        assertTrue(session.draggingHorizontally)
+        assertEquals(400f, session.latestDragOffsetPx, 0.01f)
+        assertEquals(2, session.lastHoverTab)
+
+        // Any subsequent movement immediately yields Dragging (no touch slop required)
+        val move = session.onMove(innerInsetPx + 520f, 60f)
+        assertTrue(move is DockGestureSession.MoveOutcome.Dragging)
+        val drag = move as DockGestureSession.MoveOutcome.Dragging
+        assertEquals(420f, drag.offsetPx, 0.5f)
+        assertEquals(2, drag.hoverTab)
+
+        // Releasing selects held tab 2 immediately
+        val release = session.onUp(upX = innerInsetPx + 520f, latestSelectedTab = 0)
+        assertTrue(release is DockGestureSession.ReleaseOutcome.Select)
+        val sel = release as DockGestureSession.ReleaseOutcome.Select
+        assertEquals(2, sel.tabIndex)
+        assertTrue(sel.changed)
+    }
+
+    @Test
+    fun continuousDragAcrossAllFourTabsWithBoundaryCrossings() {
+        // Touch down at Home (0) and drag all the way to Settings (3)
+        val startX = innerInsetPx + 50f
+        val session = DockGestureSession(
+            downX = startX,
+            downY = 60f,
+            initialSelectedTab = 0,
+            slotWidthPx = slotWidthPx,
+            innerInsetPx = innerInsetPx,
+            tabCount = tabCount,
+            touchSlopPx = touchSlopPx,
+        )
+
+        // Start drag right
+        val toAutomations = session.onMove(innerInsetPx + 300f, 60f) as DockGestureSession.MoveOutcome.Dragging
+        assertEquals(1, toAutomations.hoverTab)
+        assertTrue(toAutomations.crossedTabBoundary)
+
+        // Move to Activity
+        val toActivity = session.onMove(innerInsetPx + 500f, 60f) as DockGestureSession.MoveOutcome.Dragging
+        assertEquals(2, toActivity.hoverTab)
+        assertTrue(toActivity.crossedTabBoundary)
+
+        // Move to Settings
+        val toSettings = session.onMove(innerInsetPx + 700f, 60f) as DockGestureSession.MoveOutcome.Dragging
+        assertEquals(3, toSettings.hoverTab)
+        assertTrue(toSettings.crossedTabBoundary)
+
+        // Slight movement within Settings does NOT trigger crossedTabBoundary again
+        val withinSettings = session.onMove(innerInsetPx + 720f, 60f) as DockGestureSession.MoveOutcome.Dragging
+        assertEquals(3, withinSettings.hoverTab)
+        assertFalse(withinSettings.crossedTabBoundary)
+
+        // Release at Settings selects Tab 3
+        val release = session.onUp(upX = innerInsetPx + 720f, latestSelectedTab = 0) as DockGestureSession.ReleaseOutcome.Select
+        assertEquals(3, release.tabIndex)
+        assertTrue(release.changed)
+    }
+
+    @Test
+    fun dragUpwardIntoScreenCancelsGestureSafelyAndRestoresInitialTab() {
+        // Touch down on Automations (1)
+        val startX = innerInsetPx + 300f
+        val session = DockGestureSession(
+            downX = startX,
+            downY = 100f,
+            initialSelectedTab = 1,
+            slotWidthPx = slotWidthPx,
+            innerInsetPx = innerInsetPx,
+            tabCount = tabCount,
+            touchSlopPx = touchSlopPx,
+            cancelUpwardDistancePx = 140f,
+        )
+
+        // Horizontal drag to Activity (2)
+        val drag = session.onMove(innerInsetPx + 500f, 95f) as DockGestureSession.MoveOutcome.Dragging
+        assertEquals(2, drag.hoverTab)
+
+        // Dragging upward by 160px (y = -60f, dy = -160f < -140f) cancels the gesture
+        val cancelOutcome = session.onMove(innerInsetPx + 500f, -60f)
+        assertEquals(DockGestureSession.MoveOutcome.Cancelled, cancelOutcome)
+        assertTrue(session.cancelled)
+
+        // OnUp after cancellation restores initialSelectedTab (1) without selecting hovered tab
+        val release = session.onUp(upX = innerInsetPx + 500f, upY = -60f, latestSelectedTab = 1)
+        assertTrue(release is DockGestureSession.ReleaseOutcome.Cancelled)
+        assertEquals(1, (release as DockGestureSession.ReleaseOutcome.Cancelled).restoreTab)
+    }
+
+    @Test
+    fun naturalThumbArcWithSlightVerticalDeviationDoesNotPrematurelyCancel() {
+        // Natural thumb movement has slight vertical tilt (e.g. dx = 40px, dy = -10px)
+        val startX = innerInsetPx + 100f
+        val session = DockGestureSession(
+            downX = startX,
+            downY = 60f,
+            initialSelectedTab = 0,
+            slotWidthPx = slotWidthPx,
+            innerInsetPx = innerInsetPx,
+            tabCount = tabCount,
+            touchSlopPx = touchSlopPx,
+        )
+
+        // Diagonal swipe where dx dominates dy
+        val move = session.onMove(startX + 50f, 50f)
+        assertTrue("Slight vertical deviation during swipe must not cancel horizontal drag", move is DockGestureSession.MoveOutcome.Dragging)
+        assertFalse(session.cancelled)
+    }
+
+    @Test
     fun bottomScrollClearanceExceedsFloatingDockFootprintAcrossAllNavBarHeights() {
         listOf(0f, 24f, 48f, 64f).forEach { navBarBottomDp ->
             val dockOccupiedFromBottom =

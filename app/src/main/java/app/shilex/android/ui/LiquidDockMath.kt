@@ -13,6 +13,8 @@ object LiquidDockMath {
     const val DOCK_OUTER_VERTICAL_MARGIN_DP = 10
     const val DOCK_MIN_BREATHING_ROOM_DP = 28
     const val SCROLL_CLEARANCE_DP = DOCK_HEIGHT_DP + DOCK_OUTER_VERTICAL_MARGIN_DP * 2 + DOCK_MIN_BREATHING_ROOM_DP
+    const val HOLD_TIMEOUT_MS = 140L
+    const val CANCEL_UPWARD_PULL_PX = 140f // ~48dp at 3x density: dragging far up into screen cancels
 
     /** Minimum bottom spacer/padding (dp) needed so scrolling clears the floating dock + nav bar. */
     fun requiredScrollClearanceDp(navBarBottomDp: Float): Float =
@@ -84,6 +86,7 @@ class DockGestureSession(
     private val innerInsetPx: Float,
     private val tabCount: Int,
     private val touchSlopPx: Float,
+    private val cancelUpwardDistancePx: Float = LiquidDockMath.CANCEL_UPWARD_PULL_PX,
 ) {
     sealed interface MoveOutcome {
         data object Pending : MoveOutcome
@@ -103,6 +106,9 @@ class DockGestureSession(
     private val startX = downX
     private val startY = downY
     private val downLocalX = toLocalX(downX)
+
+    val downTab: Int = LiquidDockMath.tabIndexAtX(downLocalX, slotWidthPx, tabCount)
+
     private val grabOffsetPx = LiquidDockMath.grabOffsetIfInsideActivePill(
         downLocalXPx = downLocalX,
         activeTabIndex = initialSelectedTab,
@@ -111,6 +117,9 @@ class DockGestureSession(
     )
 
     var draggingHorizontally: Boolean = false
+        private set
+
+    var isHoldActivated: Boolean = false
         private set
 
     var cancelled: Boolean = false
@@ -123,28 +132,51 @@ class DockGestureSession(
         private set
 
     private var lastLocalX: Float = downLocalX
+    private var lastY: Float = downY
 
     private fun toLocalX(x: Float): Float =
         (x - innerInsetPx).coerceIn(0f, (tabCount * slotWidthPx).coerceAtLeast(0f))
+
+    /**
+     * Activates drag mode when the user touches and holds stationary for [LiquidDockMath.HOLD_TIMEOUT_MS].
+     * Returns the held destination tab so the lens can smoothly glide to it.
+     */
+    fun onHoldActivated(): Int {
+        if (cancelled) return initialSelectedTab
+        isHoldActivated = true
+        draggingHorizontally = true
+        lastHoverTab = downTab
+        latestDragOffsetPx = LiquidDockMath.offsetForTab(downTab, slotWidthPx, tabCount)
+        return downTab
+    }
 
     fun onMove(x: Float, y: Float, consumedByOther: Boolean = false): MoveOutcome {
         if (cancelled) return MoveOutcome.Cancelled
 
         val localX = toLocalX(x)
         lastLocalX = localX
+        lastY = y
         val dx = x - startX
         val dy = y - startY
+
+        // Pulling far up into screen content (> cancelUpwardDistancePx above dock) cancels gesture safely
+        if (dy < -cancelUpwardDistancePx) {
+            cancelled = true
+            return MoveOutcome.Cancelled
+        }
 
         if (!draggingHorizontally) {
             if (consumedByOther) {
                 cancelled = true
                 return MoveOutcome.Cancelled
             }
-            if (abs(dy) > touchSlopPx * 1.4f && abs(dy) > abs(dx) * 1.2f) {
+            // Vertical swipe before horizontal drag starts cancels to let screen scroll
+            if (abs(dy) > touchSlopPx * 1.6f && abs(dy) > abs(dx) * 1.5f) {
                 cancelled = true
                 return MoveOutcome.Cancelled
             }
-            if (abs(dx) > touchSlopPx * 0.55f && abs(dx) >= abs(dy)) {
+            // Responsive horizontal threshold to start continuous tracking
+            if (abs(dx) > touchSlopPx * 0.45f) {
                 draggingHorizontally = true
             } else {
                 return MoveOutcome.Pending
@@ -153,7 +185,7 @@ class DockGestureSession(
 
         val targetOffset = LiquidDockMath.dragOffsetForTouch(
             currentLocalXPx = localX,
-            grabOffsetInPillPx = grabOffsetPx,
+            grabOffsetInPillPx = if (isHoldActivated) slotWidthPx / 2f else grabOffsetPx,
             slotWidthPx = slotWidthPx,
             tabCount = tabCount,
         )
@@ -175,13 +207,20 @@ class DockGestureSession(
 
     fun onUp(
         upX: Float? = null,
+        upY: Float? = null,
         consumedByOther: Boolean = false,
         latestSelectedTab: Int = initialSelectedTab,
     ): ReleaseOutcome {
         if (cancelled || consumedByOther) {
             cancelled = true
-            return ReleaseOutcome.Cancelled(latestSelectedTab)
+            return ReleaseOutcome.Cancelled(initialSelectedTab)
         }
+        val effectiveY = upY ?: lastY
+        if (effectiveY - startY < -cancelUpwardDistancePx) {
+            cancelled = true
+            return ReleaseOutcome.Cancelled(initialSelectedTab)
+        }
+
         val effectiveLocalX = upX?.let(::toLocalX) ?: lastLocalX
         val resolvedTab = if (draggingHorizontally) {
             LiquidDockMath.nearestTabForOffset(latestDragOffsetPx, slotWidthPx, tabCount)

@@ -23,6 +23,8 @@ import app.shilex.android.Diag
 import app.shilex.android.MainActivity
 import app.shilex.android.assistant.Phase
 import app.shilex.android.assistant.VoiceSession
+import app.shilex.android.control.ControlRules
+import app.shilex.android.control.ControlService
 import app.shilex.android.data.Settings
 import app.shilex.android.ui.Orb
 import app.shilex.android.ui.ShilexTheme
@@ -42,10 +44,15 @@ object FloatingOrb {
 
     fun allowed(context: Context) = AndroidSettings.canDrawOverlays(context)
 
-    /** Shows or hides the orb to match the setting, the permission and whether the app is open. */
+    /** Shows or hides the orb to match the setting, permission, visibility, and secure screen boundaries. */
     fun sync(context: Context) {
         val app = context.applicationContext
-        val want = Settings(app).floatingOrb && allowed(app) && !appVisible
+        val control = ControlService.instance
+        val sensitiveScreen = control != null && (
+            control.isSensitiveAuthActive() ||
+                control.foregroundPackage().let { it.isNotEmpty() && ControlRules.isSensitiveOrBlockedPackage(it) }
+            )
+        val want = Settings(app).floatingOrb && allowed(app) && !appVisible && !sensitiveScreen
         if (want && host == null) show(app) else if (!want && host != null) hide(app)
     }
 

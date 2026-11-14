@@ -18,6 +18,7 @@ import app.shilex.android.assistant.VoiceService
 import app.shilex.android.assistant.VoiceSession
 import app.shilex.android.audio.AudioPlaybackState
 import app.shilex.android.audio.MusicPause
+import app.shilex.android.audio.Speaker
 import app.shilex.android.data.Settings
 import app.shilex.android.learn.Habits
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,9 +42,8 @@ class LocalTurn private constructor(private val context: Context) {
     private val actions = LocalActions(context)
     private val musicPause = MusicPause(context)
     private val offline = OfflineSpeech.get(context)
+    private val speaker = Speaker.get(context)
     private var recognizer: SpeechRecognizer? = null
-    private var tts: TextToSpeech? = null
-    private var ttsReady = false
     private var heardAt = 0L
 
     @Volatile var active = false
@@ -195,6 +195,23 @@ class LocalTurn private constructor(private val context: Context) {
 
     private fun hourNow() = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
 
+    /** Immediately stops any local listening or local TTS reply. */
+    fun stop() {
+        if (!active && _phase.value == LocalPhase.Idle) return
+        closeRecognizer()
+        offline.release()
+        speaker.flush()
+        finish()
+    }
+
+    /** Cuts off a local spoken reply if currently speaking. */
+    fun interrupt() {
+        if (_phase.value == LocalPhase.Speaking) {
+            speaker.flush()
+            finish()
+        }
+    }
+
     private fun finish() {
         active = false
         _phase.value = LocalPhase.Idle
@@ -210,48 +227,23 @@ class LocalTurn private constructor(private val context: Context) {
 
     private fun warmUpVoice() {
         main.removeCallbacksAndMessages(SHUTDOWN)
-        if (tts != null) return
-        tts = TextToSpeech(context) { status ->
-            ttsReady = status == TextToSpeech.SUCCESS
-            tts?.language = Locale("en", "IN")
-            tts?.setAudioAttributes(
-                AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build(),
-            )
-            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {
-                    AudioPlaybackState.onLocalTtsStarted()
-                }
-                override fun onDone(utteranceId: String?) {
-                    AudioPlaybackState.onLocalTtsEnded()
-                    main.post(::finish)
-                }
-                @Deprecated("Deprecated in Java")
-                override fun onError(utteranceId: String?) {
-                    AudioPlaybackState.onLocalTtsEnded()
-                    main.post(::finish)
-                }
-            })
-        }
+        speaker.initTts()
     }
 
     private fun say(reply: String) {
-        val voice = tts
-        if (voice == null || !ttsReady) {
-            Diag.w("local: no voice for the reply")
+        if (!settings.speakResponses) {
             finish()
             return
         }
         _phase.value = LocalPhase.Speaking
-        AudioPlaybackState.onLocalTtsStarted()
-        voice.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "reply")
+        speaker.speak(reply) {
+            main.post(::finish)
+        }
     }
 
     private fun shutDownVoice() {
         if (active) return
         offline.release()
-        tts?.shutdown()
-        tts = null
-        ttsReady = false
     }
 
     companion object {

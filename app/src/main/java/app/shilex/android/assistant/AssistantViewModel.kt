@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.PowerManager
 import androidx.lifecycle.AndroidViewModel
+import app.shilex.android.audio.Speaker
 import app.shilex.android.data.PersonalProfile
 import app.shilex.android.data.PersonalProfileStore
 import app.shilex.android.data.Settings
@@ -142,6 +143,42 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
         get() = settings.waveToStop
         set(value) { settings.waveToStop = value }
 
+    var speakResponses: Boolean
+        get() = settings.speakResponses
+        set(value) { settings.speakResponses = value }
+
+    val speaker: Speaker get() = Speaker.get(getApplication())
+
+    var ttsVoiceId: String?
+        get() = settings.ttsVoiceId
+        set(value) {
+            settings.ttsVoiceId = value
+            speaker.applySavedVoiceAndSettings()
+        }
+
+    var ttsSpeechRate: Float
+        get() = settings.ttsSpeechRate
+        set(value) {
+            settings.ttsSpeechRate = value
+            speaker.applySavedVoiceAndSettings()
+        }
+
+    var ttsPitch: Float
+        get() = settings.ttsPitch
+        set(value) {
+            settings.ttsPitch = value
+            speaker.applySavedVoiceAndSettings()
+        }
+
+    var ttsGenderFilter: String
+        get() = settings.ttsGenderFilter
+        set(value) { settings.ttsGenderFilter = value }
+
+    fun restoreDefaultTtsVoice() {
+        settings.restoreDefaultTtsVoice()
+        speaker.applySavedVoiceAndSettings()
+    }
+
     var networkSpeech: Boolean
         get() = settings.networkSpeech
         set(value) { settings.networkSpeech = value }
@@ -160,9 +197,15 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
 
     fun start() = session.start()
 
-    fun stop() = session.stop("Stop button")
+    fun stop() {
+        local.stop()
+        session.stop("Stop button")
+    }
 
-    fun interrupt() = session.interrupt()
+    fun interrupt() {
+        local.interrupt()
+        session.interrupt()
+    }
 
     fun permissionAnswered(granted: Boolean) = session.permissionAnswered(granted)
 

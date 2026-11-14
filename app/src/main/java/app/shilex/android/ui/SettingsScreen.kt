@@ -430,6 +430,59 @@ private fun SettingsMainContent(
             }
         }
 
+        val speaker = remember { assistant.speaker }
+        val availableVoices by speaker.availableVoices.collectAsStateWithLifecycle()
+        val isTtsReady = speaker.isTtsReady()
+        val ttsError by speaker.ttsError.collectAsStateWithLifecycle()
+        val previewingVoiceId by speaker.previewingVoiceId.collectAsStateWithLifecycle()
+
+        var speakResponses by remember { mutableStateOf(assistant.speakResponses) }
+        var ttsVoiceId by remember { mutableStateOf(assistant.ttsVoiceId) }
+        var speechRate by remember { mutableFloatStateOf(assistant.ttsSpeechRate) }
+        var pitch by remember { mutableFloatStateOf(assistant.ttsPitch) }
+        var genderFilter by remember { mutableStateOf(assistant.ttsGenderFilter) }
+
+        VoiceSettingsSection(
+            assistant = assistant,
+            speakResponses = speakResponses,
+            onSpeakResponsesChanged = {
+                speakResponses = it
+                assistant.speakResponses = it
+            },
+            ttsVoiceId = ttsVoiceId,
+            onVoiceSelected = { id ->
+                ttsVoiceId = id
+                assistant.ttsVoiceId = id
+            },
+            speechRate = speechRate,
+            onSpeechRateChanged = { rate ->
+                speechRate = rate
+                assistant.ttsSpeechRate = rate
+            },
+            pitch = pitch,
+            onPitchChanged = { p ->
+                pitch = p
+                assistant.ttsPitch = p
+            },
+            genderFilter = genderFilter,
+            onGenderFilterChanged = { filter ->
+                genderFilter = filter
+                assistant.ttsGenderFilter = filter
+            },
+            availableVoices = availableVoices,
+            isTtsReady = isTtsReady,
+            ttsError = ttsError,
+            previewingVoiceId = previewingVoiceId,
+            onPreviewVoice = { id -> speaker.previewVoice(id) },
+            onStopPreview = { speaker.stopPreview() },
+            onRestoreDefault = {
+                assistant.restoreDefaultTtsVoice()
+                ttsVoiceId = null
+                speechRate = 1.0f
+                pitch = 1.0f
+            },
+        )
+
         Section("Floating Presence") {
             val prefs = remember { AppSettings(context) }
             var orbOn by remember { mutableStateOf(prefs.floatingOrb && overlayAllowed) }

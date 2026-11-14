@@ -1,26 +1,24 @@
 package app.shilex.android.notify
 
 import android.content.Context
-import android.media.AudioAttributes
 import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
 import app.shilex.android.Diag
 import app.shilex.android.assistant.VoiceSession
-import java.util.Locale
+import app.shilex.android.audio.Speaker
 
 /**
  * The "watch my messages" scene: for a while, JARVIS stays quiet and says out loud only when
- * a person needs the user ([WatchRules]). Runs on the phone with its own voice; nothing goes
- * to Gemini, and nothing is kept after the watch ends.
+ * a person needs the user ([WatchRules]). Runs on the phone via unified [Speaker] so selected
+ * voice, rate/pitch, audio focus, and echo suppression apply; nothing goes to Gemini.
  */
 object MessageWatch {
     @Volatile var untilMillis = 0L
         private set
     private var rules = WatchRules()
     private val main = Handler(Looper.getMainLooper())
-    private var tts: TextToSpeech? = null
 
     val watching: Boolean get() = System.currentTimeMillis() < untilMillis
 
@@ -32,7 +30,6 @@ object MessageWatch {
 
     fun stop() {
         untilMillis = 0L
-        main.post(::shutDown)
         Diag.i("watch: off")
     }
 
@@ -43,31 +40,8 @@ object MessageWatch {
         val silent = audio.ringerMode != AudioManager.RINGER_MODE_NORMAL
         val line = rules.decide(n, System.currentTimeMillis(), silent, VoiceSession.get(context).active) ?: return
         Diag.i("watch: speaking up")
-        main.post { say(context.applicationContext, line) }
-    }
-
-    private fun say(context: Context, line: String) {
-        tts?.let {
-            it.speak(line, TextToSpeech.QUEUE_ADD, null, "watch")
-            return
+        main.post {
+            Speaker.get(context.applicationContext).speak(line, queueMode = TextToSpeech.QUEUE_ADD)
         }
-        lateinit var voice: TextToSpeech
-        voice = TextToSpeech(context) { status ->
-            if (status != TextToSpeech.SUCCESS) {
-                Diag.w("watch: no voice")
-                return@TextToSpeech
-            }
-            voice.language = Locale("en", "IN")
-            voice.setAudioAttributes(
-                AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build(),
-            )
-            voice.speak(line, TextToSpeech.QUEUE_ADD, null, "watch")
-        }
-        tts = voice
-    }
-
-    private fun shutDown() {
-        tts?.shutdown()
-        tts = null
     }
 }

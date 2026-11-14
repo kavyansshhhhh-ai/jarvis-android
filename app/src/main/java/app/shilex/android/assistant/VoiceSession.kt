@@ -65,7 +65,7 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
     private val settings = Settings(app)
     private val http = OkHttpClient.Builder().pingInterval(20, TimeUnit.SECONDS).build()
     private val client = LiveClient(http)
-    private val speaker = Speaker()
+    private val speaker = Speaker.get(app)
     private val mic = MicRecorder(::onMicChunk)
     private val wave = WaveStop(app) { interrupt("a wave") }
     private val talkOver = TalkOver(speaker)
@@ -120,6 +120,9 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
     @Volatile private var replyStarted = false
     @Volatile private var mutedChunks = 0
     @Volatile private var loudest = 0
+    @Volatile private var turnReceivedAudio = false
+    private val lastAssistantTurnText = StringBuilder()
+    private val lastUserTurnText = StringBuilder()
 
     suspend fun saveKey(key: String): String? {
         val trimmed = key.trim()
@@ -319,6 +322,7 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
                 }
             }
             is LiveEvent.Audio -> if (!droppingReply) {
+                turnReceivedAudio = true
                 if (!replyStarted) {
                     replyStarted = true
                     val wait = if (voiceAt > 0) "${SystemClock.elapsedRealtime() - voiceAt} ms after you stopped talking" else "with no voice heard"
@@ -336,11 +340,13 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
                     TaskTracker.heard()
                 }
                 heardUser = true
-                tools.userSpoke(event.text)
+                lastUserTurnText.append(' ').append(event.text)
+                tools.userSpoke(lastUserTurnText.toString().trim())
                 _state.update { it.copy(lines = transcript.add(fromUser = true, event.text)) }
             }
             is LiveEvent.AssistantText -> if (!droppingReply) {
                 lastActivity = SystemClock.elapsedRealtime()
+                lastAssistantTurnText.append(event.text)
                 _state.update { it.copy(lines = transcript.add(fromUser = false, event.text)) }
             }
             LiveEvent.Interrupted -> {
@@ -349,21 +355,46 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
                 wave.watch(false)
                 droppingReply = false
                 replyStarted = false
+                turnReceivedAudio = false
+                lastAssistantTurnText.clear()
+                lastUserTurnText.clear()
                 speaker.flush()
                 transcript.endTurn()
             }
             LiveEvent.TurnComplete -> {
                 speaker.endReply()
+                val textToSpeak = lastAssistantTurnText.toString()
+                val receivedAudio = turnReceivedAudio
+                turnReceivedAudio = false
+                lastAssistantTurnText.clear()
+                lastUserTurnText.clear()
                 logTurnEnd()
                 droppingReply = false
                 transcript.endTurn()
-                scope.launch {
-                    while (speaker.isAudible(tailMs = 0)) delay(100)
-                    wave.watch(false)
-                    if (wanted && _state.value.phase == Phase.Speaking) {
-                        _state.update { it.copy(phase = Phase.Listening) }
+
+                // If Gemini Live stream sent text reply but no audio chunks (or audio dropped), fallback to local TTS!
+                if (!receivedAudio && textToSpeak.isNotBlank() && settings.speakResponses) {
+                    Diag.i("reply: falling back to local TTS for assistant text: ${textToSpeak.take(40)}...")
+                    _state.update { it.copy(phase = Phase.Speaking) }
+                    speaker.speak(textToSpeak) {
+                        scope.launch {
+                            while (speaker.isAudible(tailMs = 0)) delay(100)
+                            wave.watch(false)
+                            if (wanted && _state.value.phase == Phase.Speaking) {
+                                _state.update { it.copy(phase = Phase.Listening) }
+                            }
+                            if (wanted) tools.openPending()
+                        }
                     }
-                    if (wanted) tools.openPending()
+                } else {
+                    scope.launch {
+                        while (speaker.isAudible(tailMs = 0)) delay(100)
+                        wave.watch(false)
+                        if (wanted && _state.value.phase == Phase.Speaking) {
+                            _state.update { it.copy(phase = Phase.Listening) }
+                        }
+                        if (wanted) tools.openPending()
+                    }
                 }
             }
             is LiveEvent.ToolCall -> {
@@ -432,6 +463,7 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
         mutedChunks = 0
         loudest = 0
         talkOver.reset()
+        lastUserTurnText.clear()
 
         heardUser = false
         voiceAt = 0

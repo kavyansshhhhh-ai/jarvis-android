@@ -73,6 +73,7 @@ class VoiceService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                LocalTurn.get(this).stop()
                 VoiceSession.get(this).stop("notification Stop")
             }
             ACTION_WAKE_OFF -> {

@@ -17,6 +17,39 @@ class Settings(context: Context) {
         get() = prefs.getString("voice", "Puck") ?: "Puck"
         set(value) = prefs.edit().putString("voice", value).apply()
 
+    /** Speak responses aloud using the on-device TTS engine. Default: true. */
+    var speakResponses: Boolean
+        get() = prefs.getBoolean("speak_responses", true)
+        set(value) = prefs.edit().putBoolean("speak_responses", value).apply()
+
+    /** Selected Android TTS voice identifier (null = system default). */
+    var ttsVoiceId: String?
+        get() = prefs.getString("tts_voice_id", null)
+        set(value) = prefs.edit().putString("tts_voice_id", value).apply()
+
+    /** TTS speech rate multiplier (0.5x .. 2.0x). Default: 1.0f. */
+    var ttsSpeechRate: Float
+        get() = prefs.getFloat("tts_speech_rate", 1.0f).coerceIn(0.5f, 2.0f)
+        set(value) = prefs.edit().putFloat("tts_speech_rate", value.coerceIn(0.5f, 2.0f)).apply()
+
+    /** TTS pitch multiplier (0.5x .. 1.5x). Default: 1.0f. */
+    var ttsPitch: Float
+        get() = prefs.getFloat("tts_pitch", 1.0f).coerceIn(0.5f, 1.5f)
+        set(value) = prefs.edit().putFloat("tts_pitch", value.coerceIn(0.5f, 1.5f)).apply()
+
+    /** Voice selection category filter ("ALL", "FEMALE", "MALE"). Default: "ALL". */
+    var ttsGenderFilter: String
+        get() = prefs.getString("tts_gender_filter", "ALL") ?: "ALL"
+        set(value) = prefs.edit().putString("tts_gender_filter", value).apply()
+
+    fun restoreDefaultTtsVoice() {
+        prefs.edit()
+            .remove("tts_voice_id")
+            .putFloat("tts_speech_rate", 1.0f)
+            .putFloat("tts_pitch", 1.0f)
+            .apply()
+    }
+
     /** "auto", "english", "hindi" or "hinglish", as on desktop. */
     var replyLanguage: String
         get() = prefs.getString("reply_language", "auto") ?: "auto"

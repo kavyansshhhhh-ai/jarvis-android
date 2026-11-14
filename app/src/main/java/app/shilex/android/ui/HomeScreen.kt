@@ -191,9 +191,9 @@ fun HomeScreen(
                         .size(164.dp)
                         .semantics { contentDescription = "${Branding.ASSISTANT_NAME}: ${now.title}" }
                         .clickable(remember { MutableInteractionSource() }, indication = null) {
-                            when (state.phase) {
-                                Phase.Off -> if (localPhase == LocalPhase.Idle) startListening()
-                                Phase.Speaking -> onInterrupt()
+                            when {
+                                state.phase == Phase.Speaking || localPhase == LocalPhase.Speaking -> onInterrupt()
+                                state.phase == Phase.Off && localPhase == LocalPhase.Idle -> startListening()
                                 else -> Unit
                             }
                         },
@@ -224,9 +224,9 @@ fun HomeScreen(
                             .size(226.dp)
                             .semantics { contentDescription = "${Branding.ASSISTANT_NAME}: ${now.title}" }
                             .clickable(remember { MutableInteractionSource() }, indication = null) {
-                                when (state.phase) {
-                                    Phase.Off -> if (localPhase == LocalPhase.Idle) startListening()
-                                    Phase.Speaking -> onInterrupt()
+                                when {
+                                    state.phase == Phase.Speaking || localPhase == LocalPhase.Speaking -> onInterrupt()
+                                    state.phase == Phase.Off && localPhase == LocalPhase.Idle -> startListening()
                                     else -> Unit
                                 }
                             },
