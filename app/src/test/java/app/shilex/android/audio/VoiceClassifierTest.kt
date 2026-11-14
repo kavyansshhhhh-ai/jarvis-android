@@ -120,4 +120,52 @@ class VoiceClassifierTest {
         val hiSample = VoiceClassifier.sampleTextForLocale(Locale("hi", "IN"))
         assertTrue(hiSample.contains("जार्विस"))
     }
+
+    @Test
+    fun bundledHindiVoicesAreGenuineDistinctAndOfflineCapable() {
+        val voices = BundledHindiVoices.ALL
+        assertEquals(3, voices.size)
+
+        // Priyamvada (Female)
+        val female = voices.filter { it.gender == VoiceGender.Female }
+        assertEquals(1, female.size)
+        assertEquals("bundled_hi_female_priyamvada", female[0].id)
+        assertEquals("Hindi Female 1", female[0].displayName)
+        assertTrue(female[0].modelAssetPath.endsWith(".onnx"))
+        assertTrue(female[0].configAssetPath.endsWith(".json"))
+        assertTrue(female[0].sampleAssetPath.endsWith(".mp3"))
+        assertEquals(22050, female[0].sampleRate)
+        assertTrue(female[0].licenseNotice.isNotBlank())
+        assertTrue(female[0].datasetSource.contains("AI4Bharat"))
+
+        // Pratham & Rohan (Male)
+        val male = voices.filter { it.gender == VoiceGender.Male }
+        assertEquals(2, male.size)
+        assertEquals("bundled_hi_male_pratham", male[0].id)
+        assertEquals("Hindi Male 1", male[0].displayName)
+        assertEquals("bundled_hi_male_rohan", male[1].id)
+        assertEquals("Hindi Male 2", male[1].displayName)
+        assertTrue(male.all { it.locale == Locale("hi", "IN") })
+        assertTrue(male.all { it.toTtsVoiceInfo().isOfflineCapable })
+    }
+
+    @Test
+    fun buildCatalogPrioritizesBundledVoicesAndHonorsFiveVoiceCap() {
+        val bundled = BundledHindiVoices.ALL.map { it.toTtsVoiceInfo() }
+        val catalog = VoiceClassifier.buildHindiCatalog(emptyList(), bundled)
+
+        assertEquals(1, catalog.femaleVoices.size)
+        assertEquals("Hindi Female 1", catalog.femaleVoices[0].displayName)
+        assertEquals("bundled_hi_female_priyamvada", catalog.femaleVoices[0].id)
+        assertTrue(catalog.femaleVoices[0].isBundled)
+        assertTrue(catalog.femaleVoices[0].isOfflineCapable)
+
+        assertEquals(2, catalog.maleVoices.size)
+        assertEquals("Hindi Male 1", catalog.maleVoices[0].displayName)
+        assertEquals("bundled_hi_male_pratham", catalog.maleVoices[0].id)
+        assertEquals("Hindi Male 2", catalog.maleVoices[1].displayName)
+        assertEquals("bundled_hi_male_rohan", catalog.maleVoices[1].id)
+        assertTrue(catalog.maleVoices.all { it.isBundled && it.isOfflineCapable })
+    }
 }
+
