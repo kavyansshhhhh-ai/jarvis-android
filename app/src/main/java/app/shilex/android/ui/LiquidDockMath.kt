@@ -133,6 +133,7 @@ class DockGestureSession(
 
     private var lastLocalX: Float = downLocalX
     private var lastY: Float = downY
+    private var holdGrabOffsetPx: Float? = null
 
     private fun toLocalX(x: Float): Float =
         (x - innerInsetPx).coerceIn(0f, (tabCount * slotWidthPx).coerceAtLeast(0f))
@@ -146,7 +147,9 @@ class DockGestureSession(
         isHoldActivated = true
         draggingHorizontally = true
         lastHoverTab = downTab
-        latestDragOffsetPx = LiquidDockMath.offsetForTab(downTab, slotWidthPx, tabCount)
+        val targetOffset = LiquidDockMath.offsetForTab(downTab, slotWidthPx, tabCount)
+        latestDragOffsetPx = targetOffset
+        holdGrabOffsetPx = (lastLocalX - targetOffset).coerceIn(0f, slotWidthPx.coerceAtLeast(0f))
         return downTab
     }
 
@@ -185,7 +188,7 @@ class DockGestureSession(
 
         val targetOffset = LiquidDockMath.dragOffsetForTouch(
             currentLocalXPx = localX,
-            grabOffsetInPillPx = if (isHoldActivated) slotWidthPx / 2f else grabOffsetPx,
+            grabOffsetInPillPx = if (isHoldActivated) (holdGrabOffsetPx ?: (slotWidthPx / 2f)) else grabOffsetPx,
             slotWidthPx = slotWidthPx,
             tabCount = tabCount,
         )
@@ -223,6 +226,14 @@ class DockGestureSession(
 
         val effectiveLocalX = upX?.let(::toLocalX) ?: lastLocalX
         val resolvedTab = if (draggingHorizontally) {
+            if (upX != null) {
+                latestDragOffsetPx = LiquidDockMath.dragOffsetForTouch(
+                    currentLocalXPx = effectiveLocalX,
+                    grabOffsetInPillPx = if (isHoldActivated) (holdGrabOffsetPx ?: (slotWidthPx / 2f)) else grabOffsetPx,
+                    slotWidthPx = slotWidthPx,
+                    tabCount = tabCount,
+                )
+            }
             LiquidDockMath.nearestTabForOffset(latestDragOffsetPx, slotWidthPx, tabCount)
         } else {
             LiquidDockMath.tabIndexAtX(effectiveLocalX, slotWidthPx, tabCount)

@@ -1,6 +1,7 @@
 package app.shilex.android.audio
 
 import android.content.Context
+import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
@@ -10,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings as AndroidSettings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
@@ -59,6 +61,15 @@ class Speaker(private val context: Context? = null) {
 
     private val _availableVoices = MutableStateFlow<List<TtsVoiceInfo>>(emptyList())
     val availableVoices: StateFlow<List<TtsVoiceInfo>> = _availableVoices.asStateFlow()
+
+    private val _hindiCatalog = MutableStateFlow(HindiVoiceCatalog())
+    val hindiCatalog: StateFlow<HindiVoiceCatalog> = _hindiCatalog.asStateFlow()
+
+    private val _engineDiagnostics = MutableStateFlow(TtsEngineDiagnostics())
+    val engineDiagnostics: StateFlow<TtsEngineDiagnostics> = _engineDiagnostics.asStateFlow()
+
+    private val _isTtsReadyState = MutableStateFlow(false)
+    val isTtsReadyState: StateFlow<Boolean> = _isTtsReadyState.asStateFlow()
 
     private val _ttsError = MutableStateFlow<String?>(null)
     val ttsError: StateFlow<String?> = _ttsError.asStateFlow()
@@ -123,12 +134,14 @@ class Speaker(private val context: Context? = null) {
                     }
                     if (status == TextToSpeech.SUCCESS) {
                         ttsReady = true
+                        _isTtsReadyState.value = true
                         _ttsError.value = null
                         configureTtsEngine()
                         drainSpeechQueue()
                         callbacks.forEach { it(true) }
                     } else {
                         ttsReady = false
+                        _isTtsReadyState.value = false
                         _ttsError.value = "TTS engine initialization failed (status code: $status)"
                         drainSpeechQueueOnError()
                         callbacks.forEach { it(false) }
@@ -140,6 +153,7 @@ class Speaker(private val context: Context? = null) {
                     initCallbacks.toList().also { initCallbacks.clear() }
                 }
                 ttsReady = false
+                _isTtsReadyState.value = false
                 _ttsError.value = "Failed to start TextToSpeech: ${e.message}"
                 drainSpeechQueueOnError()
                 callbacks.forEach { it(false) }
@@ -201,51 +215,73 @@ class Speaker(private val context: Context? = null) {
     }
 
     /**
-     * Discovers genuine voices installed on the device and classifies them
-     * as Female, Male, or Unspecified without guessing.
+     * Discovers genuine Hindi (India) `hi-IN` voices on the active TTS engine and checks
+     * Google Speech Services + language data status.
      */
     fun discoverVoices() {
-        val engine = tts ?: return
-        val rawVoices = try {
-            engine.voices
-        } catch (e: Exception) {
-            null
-        }
-
-        if (rawVoices.isNullOrEmpty()) {
+        val engine = tts
+        if (engine == null) {
+            _hindiCatalog.value = HindiVoiceCatalog()
             _availableVoices.value = emptyList()
             return
         }
 
-        val parsed = rawVoices
-            .filter { VoiceClassifier.isSupportedLanguage(it.locale) }
-            .map { v ->
-                val gender = VoiceClassifier.classifyGender(v.name, v.features)
-                val quality = when (v.quality) {
-                    Voice.QUALITY_VERY_HIGH -> "Very High"
-                    Voice.QUALITY_HIGH -> "High"
-                    Voice.QUALITY_NORMAL -> "Standard"
-                    else -> "Normal"
-                }
-                TtsVoiceInfo(
-                    id = v.name,
-                    displayName = VoiceClassifier.formatDisplayName(v.name, gender, v.locale),
-                    gender = gender,
-                    locale = v.locale,
-                    isNetworkRequired = v.isNetworkConnectionRequired,
-                    quality = quality,
-                    isInstalled = !v.features.orEmpty().contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED),
-                )
-            }
-            // Sort: installed first, local before online, highest numeric quality, then name
-            .sortedWith(
-                compareByDescending<TtsVoiceInfo> { it.isInstalled }
-                    .thenBy { it.isNetworkRequired }
-                    .thenByDescending { qualityRank(it.quality) }
-                    .thenBy { it.displayName },
-            )
+        val rawVoices = runCatching { engine.voices }.getOrNull().orEmpty()
+        val activePkg = runCatching { engine.defaultEngine }.getOrNull()
+        val engines = runCatching { engine.engines }.getOrNull().orEmpty()
+        val activeEngineInfo = engines.firstOrNull { it.name == activePkg }
+        val googleInstalled = engines.any { it.name == VoiceClassifier.GOOGLE_TTS_PACKAGE }
+        val hiAvailability = runCatching { engine.isLanguageAvailable(Locale("hi", "IN")) }.getOrNull()
 
-        _availableVoices.value = parsed
+        val manualOverrides = appContext?.let { Settings(it).ttsManualVoiceGenders } ?: emptyMap()
+        val mapped = rawVoices.map { v ->
+            RawTtsVoice(
+                id = v.name,
+                locale = v.locale,
+                isNetworkRequired = v.isNetworkConnectionRequired,
+                qualityScore = v.quality,
+                features = v.features,
+            )
+        }
+
+        val catalog = VoiceClassifier.buildHindiCatalog(mapped, manualOverrides)
+        _hindiCatalog.value = catalog
+        _availableVoices.value = catalog.femaleVoices + catalog.maleVoices
+        _engineDiagnostics.value = TtsEngineDiagnostics(
+            activeEnginePackage = activePkg,
+            activeEngineLabel = activeEngineInfo?.label ?: activePkg,
+            isGoogleSpeechServicesActive = activePkg == VoiceClassifier.GOOGLE_TTS_PACKAGE,
+            isGoogleSpeechServicesInstalled = googleInstalled,
+            hindiLanguageAvailability = hiAvailability,
+            totalEngineVoicesCount = rawVoices.size,
+            totalHindiVoicesCount = catalog.totalHindiVoicesCount,
+            installedHindiVoicesCount = catalog.installedHindiVoicesCount,
+        )
+    }
+
+    /**
+     * Launches Android's TTS Voice Data Installer (or TTS Settings fallback) so the user can
+     * download genuine Hindi (India) voices via Google Speech Services / active engine.
+     */
+    fun openHindiVoiceDataSettings(callerContext: Context): Boolean {
+        val activePkg = _engineDiagnostics.value.activeEnginePackage
+        val installForEngine = Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA).apply {
+            if (!activePkg.isNullOrBlank()) setPackage(activePkg)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val installGeneric = Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val ttsSettings = Intent("com.android.settings.TTS_SETTINGS")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val accessibilitySettings = Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        return listOf(installForEngine, installGeneric, ttsSettings, accessibilitySettings).any { intent ->
+            runCatching {
+                callerContext.startActivity(intent)
+                true
+            }.getOrDefault(false)
+        }
     }
 
     /**
@@ -260,8 +296,8 @@ class Speaker(private val context: Context? = null) {
         val settings = Settings(ctx)
         val targetVoiceId = settings.ttsVoiceId
 
-        // 1. Voice profile selection (prefer installed profiles)
-        val allVoices = engine.voices
+        // 1. Voice profile selection (prefer genuine installed offline Hindi hi-IN voices)
+        val allVoices = runCatching { engine.voices }.getOrNull()
         if (!allVoices.isNullOrEmpty()) {
             val installedVoices = allVoices.filter {
                 !it.features.orEmpty().contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)
@@ -277,20 +313,33 @@ class Speaker(private val context: Context? = null) {
             if (matching != null) {
                 engine.voice = matching
             } else {
-                // Fallback: prefer Indian English, then device default locale
-                val defaultFallback = installedVoices.firstOrNull { it.locale.language == "en" && it.locale.country == "IN" }
+                // Fallback: prefer installed offline hi-IN voice matching selected category, then any installed hi-IN
+                val catalog = _hindiCatalog.value
+                val preferredCatalogId = if (settings.ttsGenderFilter == Settings.GENDER_MALE) {
+                    catalog.maleVoices.firstOrNull { it.isInstalled }?.id
+                        ?: catalog.femaleVoices.firstOrNull { it.isInstalled }?.id
+                } else {
+                    catalog.femaleVoices.firstOrNull { it.isInstalled }?.id
+                        ?: catalog.maleVoices.firstOrNull { it.isInstalled }?.id
+                }
+                val defaultFallback = preferredCatalogId?.let { id ->
+                    installedVoices.firstOrNull { it.name == id }
+                } ?: installedVoices
+                    .filter { VoiceClassifier.isHindiIndiaLocale(it.locale) }
+                    .sortedWith(compareBy<Voice> { it.isNetworkConnectionRequired }.thenByDescending { it.quality })
+                    .firstOrNull()
+                    ?: installedVoices.firstOrNull { it.locale.language == "en" && it.locale.country == "IN" }
                     ?: installedVoices.firstOrNull { it.locale == Locale.getDefault() }
-                    ?: installedVoices.firstOrNull { it.locale.language == "en" }
                     ?: engine.defaultVoice
                 defaultFallback?.let { engine.voice = it }
             }
         } else {
-            // Set locale fallback if voices collection is unavailable
-            val langResult = engine.setLanguage(Locale("en", "IN"))
-            if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+            val hiLocale = Locale("hi", "IN")
+            val hiResult = engine.setLanguage(hiLocale)
+            if (hiResult == TextToSpeech.LANG_MISSING_DATA || hiResult == TextToSpeech.LANG_NOT_SUPPORTED) {
                 val fallbackResult = engine.setLanguage(Locale.getDefault())
                 if (fallbackResult == TextToSpeech.LANG_MISSING_DATA || fallbackResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    _ttsError.value = "Selected TTS language data is missing. Install English voice data in Android TTS Settings."
+                    _ttsError.value = "Hindi (hi-IN) TTS data is not installed. Tap Install Hindi Voice Data to download it."
                 }
             }
         }
@@ -394,10 +443,15 @@ class Speaker(private val context: Context? = null) {
         // Stop any active speech before starting preview
         stopTts()
 
-        val targetVoice = engine.voices?.firstOrNull { it.name == voiceId }
-        val previewLocale = targetVoice?.locale ?: Locale.getDefault()
+        val targetVoice = runCatching { engine.voices }.getOrNull()?.firstOrNull { it.name == voiceId }
+        val previewLocale = targetVoice?.locale ?: Locale("hi", "IN")
         val textToSpeak = sampleText ?: VoiceClassifier.sampleTextForLocale(previewLocale)
 
+        appContext?.let { ctx ->
+            val settings = Settings(ctx)
+            engine.setSpeechRate(settings.ttsSpeechRate)
+            engine.setPitch(settings.ttsPitch)
+        }
         if (targetVoice != null) {
             engine.voice = targetVoice
         }
@@ -573,6 +627,7 @@ class Speaker(private val context: Context? = null) {
         tts?.shutdown()
         tts = null
         ttsReady = false
+        _isTtsReadyState.value = false
         writer.execute {
             track?.release()
             track = null

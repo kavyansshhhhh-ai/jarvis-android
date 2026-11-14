@@ -4,7 +4,6 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
@@ -12,13 +11,6 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -53,6 +45,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -231,7 +224,9 @@ private fun Content(
             .fillMaxSize()
             .background(OledBlack),
     ) {
-        // Full-bleed scrollable content layer (scrolls smoothly behind the floating Liquid Glass capsule dock)
+        val safeTab = tab.coerceIn(0, Tab.entries.lastIndex)
+
+        // Full-bleed scrollable content layer (instant zero-delay swap when tab changes)
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -249,47 +244,28 @@ private fun Content(
                     },
                 ),
         ) {
-            AnimatedContent(
-                targetState = tab,
-                transitionSpec = {
-                    val dir = if (targetState >= initialState) 1 else -1
-                    (
-                        slideInHorizontally(animationSpec = tween(240)) { width -> dir * (width / 14) } +
-                            fadeIn(animationSpec = tween(220)) +
-                            scaleIn(initialScale = 0.985f, animationSpec = tween(240))
-                        ) togetherWith (
-                        slideOutHorizontally(animationSpec = tween(200)) { width -> -dir * (width / 18) } +
-                            fadeOut(animationSpec = tween(180)) +
-                            scaleOut(targetScale = 0.985f, animationSpec = tween(200))
-                        )
-                },
-                label = "tabTransition",
-            ) { currentTab ->
-                when (Tab.entries[currentTab]) {
-                    Tab.Home -> HomeScreen(
-                        state = state,
-                        localPhase = localPhase,
-                        level = level,
-                        task = task,
-                        activity = activity,
-                        wakeOn = assistant.wakeWordAvailable && wakeWord && VoiceService.hasMicPermission(context),
-                        onStart = assistant::start,
-                        onStop = assistant::stop,
-                        onInterrupt = assistant::interrupt,
-                        onMicDenied = assistant::micUnavailable,
-                        onPermissionAnswered = assistant::permissionAnswered,
-                        onQuick = assistant::quick,
-                        onSeeActivity = { setTab(Tab.Activity.ordinal) },
-                        favourites = remember(activity.size) { assistant.favourites() },
-                    )
-                    Tab.Automations -> AutomationsScreen()
-                    Tab.Activity -> ActivityScreen(activity, assistant::clearActivity)
-                    Tab.Settings -> SettingsScreen(assistant)
-                }
+            when (Tab.entries[safeTab]) {
+                Tab.Home -> HomeScreen(
+                    state = state,
+                    localPhase = localPhase,
+                    level = level,
+                    task = task,
+                    activity = activity,
+                    wakeOn = assistant.wakeWordAvailable && wakeWord && VoiceService.hasMicPermission(context),
+                    onStart = assistant::start,
+                    onStop = assistant::stop,
+                    onInterrupt = assistant::interrupt,
+                    onMicDenied = assistant::micUnavailable,
+                    onPermissionAnswered = assistant::permissionAnswered,
+                    onQuick = assistant::quick,
+                    onSeeActivity = { setTab(Tab.Activity.ordinal) },
+                    favourites = remember(activity.size) { assistant.favourites() },
+                )
+                Tab.Automations -> AutomationsScreen()
+                Tab.Activity -> ActivityScreen(activity, assistant::clearActivity)
+                Tab.Settings -> SettingsScreen(assistant)
             }
         }
-
-        val safeTab = tab.coerceIn(0, Tab.entries.lastIndex)
 
         // Interactive Finger-Tracking Floating Liquid Glass Capsule Navigation Dock
         FloatingLiquidGlassDock(
@@ -408,32 +384,48 @@ private fun FloatingLiquidGlassDock(
             val lensX = remember(count) {
                 Animatable(LiquidDockMath.offsetForTab(selectedTab, slotWidthPx, count))
             }
+            var dragOffsetPx by remember {
+                mutableFloatStateOf(LiquidDockMath.offsetForTab(selectedTab, slotWidthPx, count))
+            }
+            var pendingTargetTab by remember { mutableStateOf<Int?>(null) }
+            var settlingTargetTab by remember { mutableStateOf<Int?>(null) }
             var layoutSnapped by remember { mutableStateOf(false) }
             var lensJob by remember { mutableStateOf<Job?>(null) }
 
             LaunchedEffect(selectedTab, slotWidthPx) {
+                if (pendingTargetTab == selectedTab) {
+                    pendingTargetTab = null
+                }
                 if (!layoutSnapped && slotWidthPx > 1f) {
                     lensJob?.cancel()
-                    lensX.snapTo(LiquidDockMath.offsetForTab(currentSelectedTab, slotWidthPx, count))
+                    val snapOffset = LiquidDockMath.offsetForTab(currentSelectedTab, slotWidthPx, count)
+                    lensX.snapTo(snapOffset)
+                    dragOffsetPx = snapOffset
                     layoutSnapped = true
                 } else if (!isDragging && !isPressed && slotWidthPx > 1f) {
-                    lensJob?.cancel()
-                    lensJob = coroutineScope.launch {
-                        lensX.animateTo(
-                            targetValue = LiquidDockMath.offsetForTab(selectedTab, slotWidthPx, count),
-                            animationSpec = spring(
-                                dampingRatio = 0.78f,
-                                stiffness = Spring.StiffnessMediumLow,
-                            ),
-                        )
+                    if (settlingTargetTab == selectedTab) {
+                        // Already animating to this exact tab from finger release
+                        settlingTargetTab = null
+                    } else {
+                        settlingTargetTab = null
+                        lensJob?.cancel()
+                        lensJob = coroutineScope.launch {
+                            lensX.animateTo(
+                                targetValue = LiquidDockMath.offsetForTab(selectedTab, slotWidthPx, count),
+                                animationSpec = spring(
+                                    dampingRatio = 0.82f,
+                                    stiffness = Spring.StiffnessMedium,
+                                ),
+                            )
+                        }
                     }
                 }
             }
 
-            val activeDisplayTab = if (isDragging) {
-                hoverTabState ?: selectedTab
-            } else {
-                selectedTab
+            val activeDisplayTab = when {
+                isDragging -> hoverTabState ?: selectedTab
+                pendingTargetTab != null -> pendingTargetTab ?: selectedTab
+                else -> selectedTab
             }
 
             val lensScale by animateFloatAsState(
@@ -463,6 +455,7 @@ private fun FloatingLiquidGlassDock(
                             )
 
                             isPressed = true
+                            pendingTargetTab = null
                             var releaseX = down.position.x
                             var releaseY = down.position.y
                             var releaseConsumed = false
@@ -471,19 +464,11 @@ private fun FloatingLiquidGlassDock(
                                 delay(LiquidDockMath.HOLD_TIMEOUT_MS)
                                 if (session.cancelled || !isPressed) return@launch
                                 val heldTab = session.onHoldActivated()
-                                isDragging = true
                                 hoverTabState = heldTab
+                                dragOffsetPx = session.latestDragOffsetPx
+                                isDragging = true
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 lensJob?.cancel()
-                                lensJob = coroutineScope.launch {
-                                    lensX.animateTo(
-                                        targetValue = session.latestDragOffsetPx,
-                                        animationSpec = spring(
-                                            dampingRatio = 0.8f,
-                                            stiffness = Spring.StiffnessMediumLow,
-                                        ),
-                                    )
-                                }
                             }
 
                             try {
@@ -519,11 +504,9 @@ private fun FloatingLiquidGlassDock(
                                             change.consume()
                                             holdJob?.cancel()
                                             holdJob = null
+                                            // Update offset synchronously with zero coroutine allocation per frame
+                                            dragOffsetPx = outcome.offsetPx
                                             isDragging = true
-                                            lensJob?.cancel()
-                                            lensJob = coroutineScope.launch {
-                                                lensX.snapTo(outcome.offsetPx)
-                                            }
                                             if (outcome.crossedTabBoundary || hoverTabState != outcome.hoverTab) {
                                                 hoverTabState = outcome.hoverTab
                                                 if (outcome.crossedTabBoundary) {
@@ -537,6 +520,9 @@ private fun FloatingLiquidGlassDock(
                                 holdJob?.cancel()
                                 holdJob = null
 
+                                val wasDragging = isDragging
+                                val startOffsetForSettle = if (wasDragging) dragOffsetPx else lensX.value
+
                                 val release = session.onUp(
                                     upX = releaseX,
                                     upY = releaseY,
@@ -544,27 +530,40 @@ private fun FloatingLiquidGlassDock(
                                     latestSelectedTab = currentSelectedTab,
                                 )
 
-                                isPressed = false
-                                isDragging = false
-                                hoverTabState = null
-
                                 val targetTab = when (release) {
                                     is DockGestureSession.ReleaseOutcome.Select -> release.tabIndex
                                     is DockGestureSession.ReleaseOutcome.Cancelled -> release.restoreTab
                                 }
 
-                                if (release is DockGestureSession.ReleaseOutcome.Select && release.changed) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    currentOnSelectTab(release.tabIndex)
+                                // Lock highlight & trigger destination switch IMMEDIATELY on release
+                                if (release is DockGestureSession.ReleaseOutcome.Select) {
+                                    settlingTargetTab = release.tabIndex
+                                    if (release.changed) {
+                                        pendingTargetTab = release.tabIndex
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        currentOnSelectTab(release.tabIndex)
+                                    }
+                                } else {
+                                    settlingTargetTab = null
+                                    pendingTargetTab = null
                                 }
 
+                                isPressed = false
+                                isDragging = false
+                                hoverTabState = null
+
+                                // Settle lens indicator smoothly in background without blocking navigation
+                                val destinationOffset = LiquidDockMath.offsetForTab(targetTab, slotW, count)
                                 lensJob?.cancel()
                                 lensJob = coroutineScope.launch {
+                                    if (wasDragging) {
+                                        lensX.snapTo(startOffsetForSettle)
+                                    }
                                     lensX.animateTo(
-                                        targetValue = LiquidDockMath.offsetForTab(targetTab, slotW, count),
+                                        targetValue = destinationOffset,
                                         animationSpec = spring(
-                                            dampingRatio = 0.78f,
-                                            stiffness = Spring.StiffnessMediumLow,
+                                            dampingRatio = 0.82f,
+                                            stiffness = Spring.StiffnessMedium,
                                         ),
                                     )
                                 }
@@ -581,7 +580,10 @@ private fun FloatingLiquidGlassDock(
                 // Luminous frosted Liquid Glass capsule lens behind hovered/active tab
                 Box(
                     modifier = Modifier
-                        .offset { IntOffset((lensX.value + innerInsetPx + padPx).roundToInt(), 0) }
+                        .offset {
+                            val xPx = if (isDragging) dragOffsetPx else lensX.value
+                            IntOffset((xPx + innerInsetPx + padPx).roundToInt(), 0)
+                        }
                         .align(Alignment.CenterStart)
                         .width((slotWidth - 4.dp).coerceAtLeast(1.dp))
                         .height(54.dp)

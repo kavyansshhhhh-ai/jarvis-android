@@ -71,6 +71,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.shilex.android.Branding
 import app.shilex.android.assistant.AssistantViewModel
+import app.shilex.android.audio.VoiceGender
 import app.shilex.android.data.Settings as AppSettings
 import app.shilex.android.memory.MemoryStore
 import app.shilex.android.orb.FloatingOrb
@@ -225,6 +226,7 @@ private fun SettingsMainContent(
         permissionSnapshot = PermissionRegistry.snapshot(context, activity)
         engine = assistant.speechEngine
         assistant.refreshWakeState()
+        assistant.refreshTtsVoices()
         onPauseOrDispose { }
     }
 
@@ -431,8 +433,9 @@ private fun SettingsMainContent(
         }
 
         val speaker = remember { assistant.speaker }
-        val availableVoices by speaker.availableVoices.collectAsStateWithLifecycle()
-        val isTtsReady = speaker.isTtsReady()
+        val hindiCatalog by speaker.hindiCatalog.collectAsStateWithLifecycle()
+        val engineDiagnostics by speaker.engineDiagnostics.collectAsStateWithLifecycle()
+        val isTtsReady by speaker.isTtsReadyState.collectAsStateWithLifecycle()
         val ttsError by speaker.ttsError.collectAsStateWithLifecycle()
         val previewingVoiceId by speaker.previewingVoiceId.collectAsStateWithLifecycle()
 
@@ -469,12 +472,21 @@ private fun SettingsMainContent(
                 genderFilter = filter
                 assistant.ttsGenderFilter = filter
             },
-            availableVoices = availableVoices,
+            hindiCatalog = hindiCatalog,
+            engineDiagnostics = engineDiagnostics,
             isTtsReady = isTtsReady,
             ttsError = ttsError,
             previewingVoiceId = previewingVoiceId,
             onPreviewVoice = { id -> speaker.previewVoice(id) },
             onStopPreview = { speaker.stopPreview() },
+            onClassifyVoice = { id, gender ->
+                assistant.setManualVoiceGender(id, gender)
+                if (gender == VoiceGender.Female || gender == VoiceGender.Male) {
+                    genderFilter = gender.name.uppercase()
+                    assistant.ttsGenderFilter = genderFilter
+                }
+            },
+            onInstallHindiVoiceData = { speaker.stopPreview() },
             onRestoreDefault = {
                 assistant.restoreDefaultTtsVoice()
                 ttsVoiceId = null

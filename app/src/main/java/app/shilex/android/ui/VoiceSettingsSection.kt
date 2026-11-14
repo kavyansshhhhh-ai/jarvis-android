@@ -31,12 +31,18 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -44,12 +50,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.shilex.android.Branding
 import app.shilex.android.assistant.AssistantViewModel
+import app.shilex.android.audio.HindiVoiceCatalog
+import app.shilex.android.audio.TtsEngineDiagnostics
 import app.shilex.android.audio.TtsVoiceInfo
 import app.shilex.android.audio.VoiceGender
+import app.shilex.android.audio.VoiceGenderSource
 import java.util.Locale
 
 private enum class VoiceTypeOption(val key: String, val label: String) {
-    ALL("ALL", "All"),
     FEMALE("FEMALE", "Female Voices"),
     MALE("MALE", "Male Voices"),
 }
@@ -57,9 +65,10 @@ private enum class VoiceTypeOption(val key: String, val label: String) {
 /**
  * Liquid Glass "Voice & Speech" settings section:
  * - Assistant speech toggle
- * - TTS engine readiness/error feedback with retry
- * - Male / Female Voice Type selector backed strictly by genuine available Android TTS profiles
- * - Live voice preview, speech rate, pitch sliders, and restore-default reset
+ * - Strict Hindi (hi-IN) catalog with ONLY two categories: Female Voices (max 5) & Male Voices (max 5)
+ * - Active TTS engine / Google Speech Services check + "Install Hindi Voice Data" launcher
+ * - Preview-first verification for genuine hi-IN voices whose engine metadata omits gender
+ * - Live voice Test preview, speech speed, pitch sliders, and restore-default reset
  */
 @Composable
 fun VoiceSettingsSection(
@@ -74,27 +83,51 @@ fun VoiceSettingsSection(
     onPitchChanged: (Float) -> Unit,
     genderFilter: String,
     onGenderFilterChanged: (String) -> Unit,
-    availableVoices: List<TtsVoiceInfo>,
+    hindiCatalog: HindiVoiceCatalog,
+    engineDiagnostics: TtsEngineDiagnostics,
     isTtsReady: Boolean,
     ttsError: String?,
     previewingVoiceId: String?,
     onPreviewVoice: (String) -> Unit,
     onStopPreview: () -> Unit,
+    onClassifyVoice: (String, VoiceGender) -> Unit,
+    onInstallHindiVoiceData: () -> Unit,
     onRestoreDefault: () -> Unit,
 ) {
-    val femaleVoices = remember(availableVoices) {
-        availableVoices.filter { it.gender == VoiceGender.Female }
-    }
-    val maleVoices = remember(availableVoices) {
-        availableVoices.filter { it.gender == VoiceGender.Male }
-    }
-    val unspecifiedVoices = remember(availableVoices) {
-        availableVoices.filter { it.gender == VoiceGender.Unspecified }
+    val context = LocalContext.current
+    val activeFilter = remember(genderFilter) {
+        if (genderFilter.equals(VoiceTypeOption.MALE.key, ignoreCase = true)) {
+            VoiceTypeOption.MALE
+        } else {
+            VoiceTypeOption.FEMALE
+        }
     }
 
-    val activeFilter = remember(genderFilter) {
-        VoiceTypeOption.entries.firstOrNull { it.key.equals(genderFilter, ignoreCase = true) }
-            ?: VoiceTypeOption.ALL
+    var previewedVoiceIds by remember { mutableStateOf(emptySet<String>()) }
+    LaunchedEffect(previewingVoiceId) {
+        if (!previewingVoiceId.isNullOrBlank()) {
+            previewedVoiceIds = previewedVoiceIds + previewingVoiceId
+        }
+    }
+
+    val activeVoices = if (activeFilter == VoiceTypeOption.MALE) {
+        hindiCatalog.maleVoices
+    } else {
+        hindiCatalog.femaleVoices
+    }
+    val missingCount = if (activeFilter == VoiceTypeOption.MALE) {
+        hindiCatalog.missingMaleCount
+    } else {
+        hindiCatalog.missingFemaleCount
+    }
+
+    val activeSelectedVoice = remember(ttsVoiceId, hindiCatalog) {
+        if (ttsVoiceId == null) {
+            null
+        } else {
+            (hindiCatalog.femaleVoices + hindiCatalog.maleVoices + hindiCatalog.unclassifiedVoices)
+                .firstOrNull { it.id == ttsVoiceId }
+        }
     }
 
     Section("Voice & Speech") {
@@ -147,7 +180,7 @@ fun VoiceSettingsSection(
             GlassDivider()
             InfoRow(
                 title = "Preparing speech engine",
-                detail = "Loading available on-device Text-to-Speech voices…",
+                detail = "Checking installed Hindi (hi-IN) Text-to-Speech voices…",
                 icon = Icons.Filled.Refresh,
                 iconTint = AmberWarning,
             )
@@ -155,7 +188,7 @@ fun VoiceSettingsSection(
 
         GlassDivider()
 
-        // Voice Type selector (Female Voices / Male Voices / All)
+        // Active engine + Google Speech Services + Hindi voice catalog status
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -173,26 +206,27 @@ fun VoiceSettingsSection(
                     color = PureWhite,
                     fontWeight = FontWeight.SemiBold,
                 )
-                val selectedCountLabel = when (activeFilter) {
-                    VoiceTypeOption.FEMALE -> "${femaleVoices.size} female"
-                    VoiceTypeOption.MALE -> "${maleVoices.size} male"
-                    VoiceTypeOption.ALL -> "${availableVoices.size} available"
-                }
-                Pill(selectedCountLabel, ElectricCyan, dot = false)
+                Pill(
+                    text = "hi-IN • F ${hindiCatalog.femaleVoices.size}/5 • M ${hindiCatalog.maleVoices.size}/5",
+                    color = ElectricCyan,
+                    dot = false,
+                )
             }
 
+            // Strictly ONLY Female Voices and Male Voices
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 VoiceTypeOption.entries.forEach { option ->
                     val selected = activeFilter == option
                     val shape = RoundedCornerShape(50)
                     val interaction = remember { MutableInteractionSource() }
-                    val accent = when (option) {
-                        VoiceTypeOption.FEMALE -> SoftPink
-                        VoiceTypeOption.MALE -> ElectricCyan
-                        VoiceTypeOption.ALL -> NeonViolet
+                    val accent = if (option == VoiceTypeOption.FEMALE) SoftPink else ElectricCyan
+                    val categoryCount = if (option == VoiceTypeOption.FEMALE) {
+                        hindiCatalog.femaleVoices.size
+                    } else {
+                        hindiCatalog.maleVoices.size
                     }
                     Box(
                         modifier = Modifier
@@ -215,11 +249,11 @@ fun VoiceSettingsSection(
                                 interactionSource = interaction,
                                 indication = null,
                             ) { onGenderFilterChanged(option.key) }
-                            .padding(vertical = 10.dp),
+                            .padding(vertical = 11.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            text = option.label,
+                            text = "${option.label} ($categoryCount/5)",
                             style = MaterialTheme.typography.labelMedium,
                             color = if (selected) PureWhite else Muted,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
@@ -228,87 +262,100 @@ fun VoiceSettingsSection(
                     }
                 }
             }
+
+            val engineName = engineDiagnostics.activeEngineLabel ?: "Default Android TTS"
+            val engineStatusLine = buildString {
+                append("Active voice: ")
+                append(activeSelectedVoice?.displayName ?: "Auto Hindi (hi-IN) Default")
+                append(" • Engine: ")
+                append(engineName)
+                if (!engineDiagnostics.isGoogleSpeechServicesActive && engineDiagnostics.isGoogleSpeechServicesInstalled) {
+                    append(" (switch to Google Speech Services in Android TTS Settings for more Hindi voices)")
+                }
+            }
+            Text(
+                text = engineStatusLine,
+                style = MaterialTheme.typography.bodySmall,
+                color = Muted,
+            )
         }
 
-        // System default / automatic choice row
         GlassDivider()
-        val isSystemDefault = ttsVoiceId == null
-        Row(
+
+        val activeHeader = if (activeFilter == VoiceTypeOption.FEMALE) "FEMALE VOICES (HINDI hi-IN)" else "MALE VOICES (HINDI hi-IN)"
+        val activeAccent = if (activeFilter == VoiceTypeOption.FEMALE) SoftPink else ElectricCyan
+        val genderWord = if (activeFilter == VoiceTypeOption.FEMALE) "female" else "male"
+
+        HindiVoiceCategoryGroup(
+            header = activeHeader,
+            accent = activeAccent,
+            voices = activeVoices,
+            missingCount = missingCount,
+            genderWord = genderWord,
+            unclassifiedCount = hindiCatalog.unclassifiedVoices.size,
+            isTtsReady = isTtsReady,
+            totalEngineVoices = engineDiagnostics.totalEngineVoicesCount,
+            selectedVoiceId = ttsVoiceId,
+            previewingVoiceId = previewingVoiceId,
+            onSelectVoice = onVoiceSelected,
+            onPreviewVoice = { id ->
+                previewedVoiceIds = previewedVoiceIds + id
+                onPreviewVoice(id)
+            },
+            onStopPreview = onStopPreview,
+            onClearClassification = { id -> onClassifyVoice(id, VoiceGender.Unspecified) },
+        )
+
+        // Honest preview-first classifier only when genuine hi-IN voices lack engine gender metadata
+        if (hindiCatalog.unclassifiedVoices.isNotEmpty()) {
+            GlassDivider()
+            UnclassifiedHindiVoicesGroup(
+                voices = hindiCatalog.unclassifiedVoices,
+                previewingVoiceId = previewingVoiceId,
+                previewedVoiceIds = previewedVoiceIds,
+                onPreviewVoice = { id ->
+                    previewedVoiceIds = previewedVoiceIds + id
+                    onPreviewVoice(id)
+                },
+                onStopPreview = onStopPreview,
+                onClassify = onClassifyVoice,
+            )
+        }
+
+        // Install Hindi Voice Data action + explanation
+        GlassDivider()
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onVoiceSelected(null) }
                 .padding(vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Column(Modifier.weight(1f)) {
+            Text(
+                text = "Hindi Voice Data",
+                style = MaterialTheme.typography.titleMedium,
+                color = PureWhite,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "Only genuine Hindi (hi-IN) profiles installed on your phone are listed above (up to 5 female + 5 male). Open Android TTS settings to download Hindi voice packs if fewer than 5 appear.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Muted,
+            )
+            OutlinedButton(
+                onClick = {
+                    onInstallHindiVoiceData()
+                    if (!assistant.speaker.openHindiVoiceDataSettings(context)) {
+                        assistant.speaker.initTts { assistant.speaker.discoverVoices() }
+                    }
+                },
+                shape = RoundedCornerShape(50),
+            ) {
                 Text(
-                    text = "System Default Voice",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = if (isSystemDefault) ElectricCyan else PureWhite,
-                    fontWeight = if (isSystemDefault) FontWeight.SemiBold else FontWeight.Medium,
-                )
-                Text(
-                    text = "Uses your phone's default English/Indian TTS voice.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Muted,
+                    text = "Install Hindi Voice Data",
+                    color = ElectricCyan,
+                    fontWeight = FontWeight.SemiBold,
                 )
             }
-            if (isSystemDefault) {
-                Pill("Active", ElectricCyan)
-            }
-        }
-
-        if (activeFilter == VoiceTypeOption.ALL || activeFilter == VoiceTypeOption.FEMALE) {
-            GlassDivider()
-            VoiceCategoryGroup(
-                header = "FEMALE VOICES",
-                accent = SoftPink,
-                voices = femaleVoices,
-                emptyMessage = if (isTtsReady) {
-                    "No genuine female voices were reported by this device's TTS engine. Install Google Speech Services voice data in Android Settings to add more."
-                } else {
-                    "Waiting for device TTS engine…"
-                },
-                selectedVoiceId = ttsVoiceId,
-                previewingVoiceId = previewingVoiceId,
-                onSelectVoice = onVoiceSelected,
-                onPreviewVoice = onPreviewVoice,
-                onStopPreview = onStopPreview,
-            )
-        }
-
-        if (activeFilter == VoiceTypeOption.ALL || activeFilter == VoiceTypeOption.MALE) {
-            GlassDivider()
-            VoiceCategoryGroup(
-                header = "MALE VOICES",
-                accent = ElectricCyan,
-                voices = maleVoices,
-                emptyMessage = if (isTtsReady) {
-                    "No genuine male voices were reported by this device's TTS engine. Install Google Speech Services voice data in Android Settings to add more."
-                } else {
-                    "Waiting for device TTS engine…"
-                },
-                selectedVoiceId = ttsVoiceId,
-                previewingVoiceId = previewingVoiceId,
-                onSelectVoice = onVoiceSelected,
-                onPreviewVoice = onPreviewVoice,
-                onStopPreview = onStopPreview,
-            )
-        }
-
-        if (activeFilter == VoiceTypeOption.ALL && unspecifiedVoices.isNotEmpty()) {
-            GlassDivider()
-            VoiceCategoryGroup(
-                header = "ADDITIONAL SYSTEM VOICES",
-                accent = NeonViolet,
-                voices = unspecifiedVoices,
-                emptyMessage = "",
-                selectedVoiceId = ttsVoiceId,
-                previewingVoiceId = previewingVoiceId,
-                onSelectVoice = onVoiceSelected,
-                onPreviewVoice = onPreviewVoice,
-                onStopPreview = onStopPreview,
-            )
         }
 
         GlassDivider()
@@ -344,8 +391,8 @@ fun VoiceSettingsSection(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = { assistant.speaker.discoverVoices() }) {
-                Text("Refresh voices", color = ElectricCyan, fontWeight = FontWeight.Medium)
+            TextButton(onClick = { assistant.refreshTtsVoices() }) {
+                Text("Refresh Hindi voices", color = ElectricCyan, fontWeight = FontWeight.Medium)
             }
             TextButton(onClick = onRestoreDefault) {
                 Text("Reset voice defaults", color = Muted, fontWeight = FontWeight.Medium)
@@ -355,16 +402,21 @@ fun VoiceSettingsSection(
 }
 
 @Composable
-private fun VoiceCategoryGroup(
+private fun HindiVoiceCategoryGroup(
     header: String,
     accent: Color,
     voices: List<TtsVoiceInfo>,
-    emptyMessage: String,
+    missingCount: Int,
+    genderWord: String,
+    unclassifiedCount: Int,
+    isTtsReady: Boolean,
+    totalEngineVoices: Int,
     selectedVoiceId: String?,
     previewingVoiceId: String?,
     onSelectVoice: (String?) -> Unit,
     onPreviewVoice: (String) -> Unit,
     onStopPreview: () -> Unit,
+    onClearClassification: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -384,114 +436,327 @@ private fun VoiceCategoryGroup(
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                text = "${voices.size}",
+                text = "${voices.size} / ${HindiVoiceCatalog.TARGET_COUNT_PER_CATEGORY}",
                 style = MaterialTheme.typography.labelMedium,
-                color = Muted,
+                color = if (missingCount == 0) accent else Muted,
+                fontWeight = FontWeight.SemiBold,
             )
         }
 
         if (voices.isEmpty()) {
+            val emptyExplanation = when {
+                !isTtsReady -> "Waiting for Android Text-to-Speech engine…"
+                unclassifiedCount > 0 ->
+                    "0 of 5 Hindi (hi-IN) $genderWord voices confirmed yet ($missingCount missing). $unclassifiedCount genuine Hindi voice(s) on this phone omit gender metadata—preview and classify them below, or tap Install Hindi Voice Data."
+                totalEngineVoices == 0 ->
+                    "0 of 5 Hindi (hi-IN) $genderWord voices found ($missingCount missing). This TTS engine did not expose downloadable voices; tap Install Hindi Voice Data below."
+                else ->
+                    "0 of 5 genuine Hindi (hi-IN) $genderWord voices are installed on this phone ($missingCount missing). Tap Install Hindi Voice Data to download Hindi voices in Google Speech Services."
+            }
             Text(
-                text = emptyMessage,
+                text = emptyExplanation,
                 style = MaterialTheme.typography.bodySmall,
                 color = Muted,
             )
         } else {
             voices.forEach { voice ->
-                val isSelected = selectedVoiceId == voice.id
-                val isPreviewing = previewingVoiceId == voice.id
-                val shape = RoundedCornerShape(16.dp)
-                Row(
+                HindiVoiceCard(
+                    voice = voice,
+                    accent = accent,
+                    isSelected = selectedVoiceId == voice.id,
+                    isPreviewing = previewingVoiceId == voice.id,
+                    onSelect = { onSelectVoice(voice.id) },
+                    onPreview = { onPreviewVoice(voice.id) },
+                    onStopPreview = onStopPreview,
+                    onClearClassification = if (voice.genderSource == VoiceGenderSource.UserConfirmed) {
+                        { onClearClassification(voice.id) }
+                    } else {
+                        null
+                    },
+                )
+            }
+
+            if (missingCount > 0) {
+                Text(
+                    text = "Showing ${voices.size} of 5 genuine Hindi (hi-IN) $genderWord voices ($missingCount more unavailable on this phone).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Muted,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HindiVoiceCard(
+    voice: TtsVoiceInfo,
+    accent: Color,
+    isSelected: Boolean,
+    isPreviewing: Boolean,
+    onSelect: () -> Unit,
+    onPreview: () -> Unit,
+    onStopPreview: () -> Unit,
+    onClearClassification: (() -> Unit)?,
+) {
+    val shape = RoundedCornerShape(16.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(
+                if (isSelected) accent.copy(alpha = 0.14f) else Color(0x0EFFFFFF),
+            )
+            .border(
+                0.8.dp,
+                if (isSelected) accent.copy(alpha = 0.55f) else GlassBorderSubtle,
+                shape,
+            )
+            .clickable(onClick = onSelect)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = voice.displayName,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (isSelected) PureWhite else PureWhite.copy(alpha = 0.9f),
+                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+            )
+            val modeLabel = if (voice.isNetworkRequired) "Online" else "Offline"
+            val installLabel = if (voice.isInstalled) "Installed" else "Download needed"
+            Text(
+                text = "${voice.gender.label} • ${voice.localeTag} • $modeLabel • $installLabel • ${voice.quality} (${voice.genderSource.label})",
+                style = MaterialTheme.typography.bodySmall,
+                color = Muted,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+            if (onClearClassification != null) {
+                Text(
+                    text = "Unassign label",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Muted.copy(alpha = 0.85f),
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(shape)
-                        .background(
-                            if (isSelected) accent.copy(alpha = 0.14f) else Color(0x0EFFFFFF),
-                        )
-                        .border(
-                            0.8.dp,
-                            if (isSelected) accent.copy(alpha = 0.55f) else GlassBorderSubtle,
-                            shape,
-                        )
-                        .clickable { onSelectVoice(voice.id) }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .padding(top = 4.dp)
+                        .clickable(onClick = onClearClassification),
+                )
+            }
+        }
+
+        if (isSelected) {
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(accent.copy(alpha = 0.22f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = "Selected",
+                    tint = accent,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+        }
+
+        VoicePreviewChip(
+            isPreviewing = isPreviewing,
+            accent = accent,
+            onPreview = onPreview,
+            onStopPreview = onStopPreview,
+        )
+    }
+}
+
+@Composable
+private fun UnclassifiedHindiVoicesGroup(
+    voices: List<TtsVoiceInfo>,
+    previewingVoiceId: String?,
+    previewedVoiceIds: Set<String>,
+    onPreviewVoice: (String) -> Unit,
+    onStopPreview: () -> Unit,
+    onClassify: (String, VoiceGender) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "LISTEN & CLASSIFY HINDI VOICES",
+                style = MaterialTheme.typography.labelMedium,
+                color = AmberWarning,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = "${voices.size} pending",
+                style = MaterialTheme.typography.labelMedium,
+                color = Muted,
+            )
+        }
+        Text(
+            text = "Android's TTS engine omitted gender metadata for these genuine hi-IN voices. Tap Test to listen first, then confirm Female or Male.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Muted,
+        )
+
+        voices.forEach { voice ->
+            val hasPreviewed = voice.id in previewedVoiceIds
+            val isPreviewing = previewingVoiceId == voice.id
+            val shape = RoundedCornerShape(16.dp)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(shape)
+                    .background(Color(0x0EFFFFFF))
+                    .border(0.8.dp, GlassBorderSubtle, shape)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(
                             text = voice.displayName,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = if (isSelected) PureWhite else PureWhite.copy(alpha = 0.9f),
-                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                            color = PureWhite,
+                            fontWeight = FontWeight.Medium,
                         )
                         val modeLabel = if (voice.isNetworkRequired) "Online" else "Offline"
-                        val installLabel = if (voice.isInstalled) "" else " • Download needed"
+                        val installLabel = if (voice.isInstalled) "Installed" else "Download needed"
                         Text(
-                            text = "$modeLabel • ${voice.quality} • ${voice.localeTag}$installLabel",
+                            text = "${voice.localeTag} • $modeLabel • $installLabel • ${voice.quality}",
                             style = MaterialTheme.typography.bodySmall,
                             color = Muted,
-                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                    VoicePreviewChip(
+                        isPreviewing = isPreviewing,
+                        accent = AmberWarning,
+                        onPreview = { onPreviewVoice(voice.id) },
+                        onStopPreview = onStopPreview,
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (!hasPreviewed) {
+                        Text(
+                            text = "Tap Test to listen first",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = AmberWarning.copy(alpha = 0.85f),
+                            modifier = Modifier.weight(1f),
+                        )
+                    } else {
+                        Text(
+                            text = "Previewed • Confirm:",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Muted,
+                            modifier = Modifier.weight(1f),
                         )
                     }
 
-                    if (isSelected) {
-                        Box(
-                            modifier = Modifier
-                                .size(24.dp)
-                                .clip(CircleShape)
-                                .background(accent.copy(alpha = 0.22f)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Check,
-                                contentDescription = "Selected",
-                                tint = accent,
-                                modifier = Modifier.size(14.dp),
-                            )
-                        }
-                        Spacer(Modifier.width(8.dp))
-                    }
-
-                    val previewInteraction = remember { MutableInteractionSource() }
-                    Box(
-                        modifier = Modifier
-                            .glassPressScale(previewInteraction)
-                            .clip(RoundedCornerShape(50))
-                            .background(if (isPreviewing) CoralError.copy(alpha = 0.2f) else Color(0x1EFFFFFF))
-                            .border(
-                                0.8.dp,
-                                if (isPreviewing) CoralError.copy(alpha = 0.6f) else Color(0x33FFFFFF),
-                                RoundedCornerShape(50),
-                            )
-                            .clickable(
-                                interactionSource = previewInteraction,
-                                indication = null,
-                            ) {
-                                if (isPreviewing) onStopPreview() else onPreviewVoice(voice.id)
-                            }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Icon(
-                                imageVector = if (isPreviewing) Icons.Filled.Close else Icons.Filled.PlayArrow,
-                                contentDescription = if (isPreviewing) "Stop preview" else "Preview voice",
-                                tint = if (isPreviewing) CoralError else accent,
-                                modifier = Modifier.size(14.dp),
-                            )
-                            Text(
-                                text = if (isPreviewing) "Stop" else "Test",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (isPreviewing) CoralError else PureWhite,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                        }
-                    }
+                    ClassifyButton(
+                        label = "Mark Female",
+                        accent = SoftPink,
+                        enabled = hasPreviewed,
+                        onClick = { onClassify(voice.id, VoiceGender.Female) },
+                    )
+                    ClassifyButton(
+                        label = "Mark Male",
+                        accent = ElectricCyan,
+                        enabled = hasPreviewed,
+                        onClick = { onClassify(voice.id, VoiceGender.Male) },
+                    )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ClassifyButton(
+    label: String,
+    accent: Color,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(50)
+    Box(
+        modifier = Modifier
+            .alpha(if (enabled) 1f else 0.4f)
+            .clip(shape)
+            .background(accent.copy(alpha = if (enabled) 0.2f else 0.08f))
+            .border(0.8.dp, accent.copy(alpha = if (enabled) 0.65f else 0.3f), shape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (enabled) PureWhite else Muted,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+@Composable
+private fun VoicePreviewChip(
+    isPreviewing: Boolean,
+    accent: Color,
+    onPreview: () -> Unit,
+    onStopPreview: () -> Unit,
+) {
+    val previewInteraction = remember { MutableInteractionSource() }
+    Box(
+        modifier = Modifier
+            .glassPressScale(previewInteraction)
+            .clip(RoundedCornerShape(50))
+            .background(if (isPreviewing) CoralError.copy(alpha = 0.2f) else Color(0x1EFFFFFF))
+            .border(
+                0.8.dp,
+                if (isPreviewing) CoralError.copy(alpha = 0.6f) else Color(0x33FFFFFF),
+                RoundedCornerShape(50),
+            )
+            .clickable(
+                interactionSource = previewInteraction,
+                indication = null,
+            ) {
+                if (isPreviewing) onStopPreview() else onPreview()
+            }
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Icon(
+                imageVector = if (isPreviewing) Icons.Filled.Close else Icons.Filled.PlayArrow,
+                contentDescription = if (isPreviewing) "Stop preview" else "Test voice",
+                tint = if (isPreviewing) CoralError else accent,
+                modifier = Modifier.size(14.dp),
+            )
+            Text(
+                text = if (isPreviewing) "Stop" else "Test",
+                style = MaterialTheme.typography.labelMedium,
+                color = if (isPreviewing) CoralError else PureWhite,
+                fontWeight = FontWeight.SemiBold,
+            )
         }
     }
 }

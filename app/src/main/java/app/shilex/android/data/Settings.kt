@@ -2,6 +2,7 @@ package app.shilex.android.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import app.shilex.android.audio.VoiceGender
 import app.shilex.android.wake.WakeDotSize
 import app.shilex.android.wake.WakeIndicatorController
 
@@ -22,7 +23,7 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("speak_responses", true)
         set(value) = prefs.edit().putBoolean("speak_responses", value).apply()
 
-    /** Selected Android TTS voice identifier (null = system default). */
+    /** Selected Android TTS voice identifier (null = system/Hindi default). */
     var ttsVoiceId: String?
         get() = prefs.getString("tts_voice_id", null)
         set(value) = prefs.edit().putString("tts_voice_id", value).apply()
@@ -37,10 +38,30 @@ class Settings(context: Context) {
         get() = prefs.getFloat("tts_pitch", 1.0f).coerceIn(0.5f, 1.5f)
         set(value) = prefs.edit().putFloat("tts_pitch", value.coerceIn(0.5f, 1.5f)).apply()
 
-    /** Voice selection category filter ("ALL", "FEMALE", "MALE"). Default: "ALL". */
+    /** Voice selection category ("FEMALE" or "MALE"). Default: "FEMALE". Legacy "ALL" normalizes to "FEMALE". */
     var ttsGenderFilter: String
-        get() = prefs.getString("tts_gender_filter", "ALL") ?: "ALL"
-        set(value) = prefs.edit().putString("tts_gender_filter", value).apply()
+        get() = normalizeGenderFilter(prefs.getString("tts_gender_filter", GENDER_FEMALE))
+        set(value) = prefs.edit().putString("tts_gender_filter", normalizeGenderFilter(value)).apply()
+
+    /** User-confirmed Female/Male classifications for genuine hi-IN voices lacking engine metadata. */
+    var ttsManualVoiceGenders: Map<String, VoiceGender>
+        get() = decodeManualVoiceGenders(prefs.getString("tts_manual_voice_genders", ""))
+        set(value) = prefs.edit().putString("tts_manual_voice_genders", encodeManualVoiceGenders(value)).apply()
+
+    fun setManualVoiceGender(voiceId: String, gender: VoiceGender) {
+        if (voiceId.isBlank()) return
+        val updated = ttsManualVoiceGenders.toMutableMap()
+        if (gender == VoiceGender.Female || gender == VoiceGender.Male) {
+            updated[voiceId] = gender
+        } else {
+            updated.remove(voiceId)
+        }
+        ttsManualVoiceGenders = updated
+    }
+
+    fun clearManualVoiceGenders() {
+        prefs.edit().remove("tts_manual_voice_genders").apply()
+    }
 
     fun restoreDefaultTtsVoice() {
         prefs.edit()
@@ -167,5 +188,41 @@ class Settings(context: Context) {
 
     companion object {
         const val DEFAULT_MODEL = "gemini-3.1-flash-live-preview"
+        const val GENDER_FEMALE = "FEMALE"
+        const val GENDER_MALE = "MALE"
+
+        fun normalizeGenderFilter(raw: String?): String = when {
+            raw.equals(GENDER_MALE, ignoreCase = true) -> GENDER_MALE
+            else -> GENDER_FEMALE
+        }
+
+        fun encodeManualVoiceGenders(map: Map<String, VoiceGender>): String =
+            map.entries
+                .asSequence()
+                .filter { it.key.isNotBlank() && (it.value == VoiceGender.Female || it.value == VoiceGender.Male) }
+                .sortedBy { it.key }
+                .joinToString("\n") { (id, gender) ->
+                    val safeId = id.replace("%", "%25").replace("|", "%7C").replace("\n", "%0A")
+                    "$safeId|${gender.name}"
+                }
+
+        fun decodeManualVoiceGenders(raw: String?): Map<String, VoiceGender> {
+            if (raw.isNullOrBlank()) return emptyMap()
+            val out = linkedMapOf<String, VoiceGender>()
+            raw.lineSequence().forEach { line ->
+                val idx = line.lastIndexOf('|')
+                if (idx <= 0 || idx >= line.length - 1) return@forEach
+                val safeId = line.substring(0, idx)
+                val genderName = line.substring(idx + 1).trim()
+                val gender = when (genderName) {
+                    VoiceGender.Female.name -> VoiceGender.Female
+                    VoiceGender.Male.name -> VoiceGender.Male
+                    else -> null
+                } ?: return@forEach
+                val id = safeId.replace("%0A", "\n").replace("%7C", "|").replace("%25", "%")
+                if (id.isNotBlank()) out[id] = gender
+            }
+            return out
+        }
     }
 }

@@ -297,4 +297,90 @@ class LiquidDockTest {
             )
         }
     }
+
+    @Test
+    fun fastDragReleaseUsesFinalUpXAndSelectsImmediatelyWithoutWaitingForHold() {
+        // Fast swipe starting at Home (0, center=100) directly to Settings (3) in a single quick move + release
+        val startX = innerInsetPx + 100f
+        val session = DockGestureSession(
+            downX = startX,
+            downY = 60f,
+            initialSelectedTab = 0,
+            slotWidthPx = slotWidthPx,
+            innerInsetPx = innerInsetPx,
+            tabCount = tabCount,
+            touchSlopPx = touchSlopPx,
+        )
+
+        // Move past Activity (2) toward Settings (3) without waiting for HOLD_TIMEOUT_MS
+        val move = session.onMove(innerInsetPx + 520f, 60f) as DockGestureSession.MoveOutcome.Dragging
+        assertFalse(session.isHoldActivated)
+        assertTrue(move.hoverTab == 2)
+
+        // Finger flicks to Settings (upX = 690px) at release frame -> immediately resolves Settings (3)
+        val release = session.onUp(upX = innerInsetPx + 690f, upY = 60f, latestSelectedTab = 0)
+        assertTrue(release is DockGestureSession.ReleaseOutcome.Select)
+        val sel = release as DockGestureSession.ReleaseOutcome.Select
+        assertEquals(3, sel.tabIndex)
+        assertTrue(sel.changed)
+    }
+
+    @Test
+    fun releaseBetweenTabsResolvesNearestDestinationAndOffCenterHoldHasZeroJump() {
+        // 1. Hold near right edge of Tab 1 ([200..400]) at 360px -> pill centers at 200px
+        val holdSession = DockGestureSession(
+            downX = innerInsetPx + 360f,
+            downY = 60f,
+            initialSelectedTab = 0,
+            slotWidthPx = slotWidthPx,
+            innerInsetPx = innerInsetPx,
+            tabCount = tabCount,
+            touchSlopPx = touchSlopPx,
+        )
+        assertEquals(1, holdSession.onHoldActivated())
+        assertEquals(200f, holdSession.latestDragOffsetPx, 0.01f)
+
+        // Moving 5px right to 365px must move pill smoothly to 205px (NO backward snap!)
+        val move1 = holdSession.onMove(innerInsetPx + 365f, 60f) as DockGestureSession.MoveOutcome.Dragging
+        assertEquals(205f, move1.offsetPx, 0.5f)
+
+        // 2. Release right between Tab 1 and Tab 2: offset 295 -> nearest 1; offset 305 -> nearest 2
+        assertEquals(1, LiquidDockMath.nearestTabForOffset(295f, slotWidthPx, tabCount))
+        assertEquals(2, LiquidDockMath.nearestTabForOffset(305f, slotWidthPx, tabCount))
+
+        // Drag to offset 305 (grabOffset = 160px, so localX = 465 -> 465 - 160 = 305) -> selects Activity (2)
+        val dragMid = holdSession.onMove(innerInsetPx + 465f, 60f) as DockGestureSession.MoveOutcome.Dragging
+        assertEquals(305f, dragMid.offsetPx, 0.5f)
+        val selMid = holdSession.onUp(upX = innerInsetPx + 465f, upY = 60f, latestSelectedTab = 0) as DockGestureSession.ReleaseOutcome.Select
+        assertEquals(2, selMid.tabIndex)
+        assertTrue(selMid.changed)
+    }
+
+    @Test
+    fun liftBeforeHoldTimeoutAndRapidTabChangesAlwaysSelectImmediately() {
+        val sequence = listOf(3, 1, 2, 0, 3, 2, 0)
+        var current = 0
+        for (target in sequence) {
+            val centerX = innerInsetPx + target * slotWidthPx + slotWidthPx / 2f
+            val session = DockGestureSession(
+                downX = centerX,
+                downY = 60f,
+                initialSelectedTab = current,
+                slotWidthPx = slotWidthPx,
+                innerInsetPx = innerInsetPx,
+                tabCount = tabCount,
+                touchSlopPx = touchSlopPx,
+            )
+            // Lift immediately before hold timeout with 2px micro-jitter
+            session.onMove(centerX + 2f, 61f)
+            assertFalse(session.isHoldActivated)
+            assertFalse(session.draggingHorizontally)
+            val release = session.onUp(upX = centerX + 2f, upY = 61f, latestSelectedTab = current)
+            assertTrue(release is DockGestureSession.ReleaseOutcome.Select)
+            val sel = release as DockGestureSession.ReleaseOutcome.Select
+            assertEquals(target, sel.tabIndex)
+            assertEquals(target != current, sel.changed)
+            current = sel.tabIndex
+        }
+    }
 }
