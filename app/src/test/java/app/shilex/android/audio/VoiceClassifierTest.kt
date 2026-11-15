@@ -167,5 +167,11 @@ class VoiceClassifierTest {
         assertEquals("bundled_hi_male_rohan", catalog.maleVoices[1].id)
         assertTrue(catalog.maleVoices.all { it.isBundled && it.isOfflineCapable })
     }
+
+    @Test
+    fun runtimeBundledVoicesStayEmptyWhenOfflineSynthesisIsNotIntegrated() {
+        assertFalse(BundledHindiVoices.IS_OFFLINE_SYNTHESIS_INTEGRATED)
+        assertTrue(BundledHindiVoices.availableForRuntime(null).isEmpty())
+    }
 }
 

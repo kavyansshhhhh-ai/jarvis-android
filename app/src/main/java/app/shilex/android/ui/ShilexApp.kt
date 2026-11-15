@@ -422,6 +422,7 @@ private fun FloatingLiquidGlassDock(
         val dragOffsetState = remember(count) { mutableFloatStateOf(0f) }
         var pendingTargetTab by remember { mutableStateOf<Int?>(null) }
         var settlingTargetTab by remember { mutableStateOf<Int?>(null) }
+        var isSettlingFromDrag by remember { mutableStateOf(false) }
         var layoutSnapped by remember { mutableStateOf(false) }
         var activeLensJob by remember { mutableStateOf<Job?>(null) }
 
@@ -432,6 +433,7 @@ private fun FloatingLiquidGlassDock(
             }
             if (!layoutSnapped) {
                 activeLensJob?.cancel()
+                isSettlingFromDrag = false
                 val snapOffset = LiquidDockMath.offsetForTab(currentSelectedTab, slotWidthPx, count)
                 lensX.snapTo(snapOffset)
                 dragOffsetState.floatValue = snapOffset
@@ -496,9 +498,11 @@ private fun FloatingLiquidGlassDock(
                         // Cancel any in-flight resting spring immediately when user touches dock
                         activeLensJob?.cancel()
                         activeLensJob = null
+                        isSettlingFromDrag = false
                         isPressed = true
                         pendingTargetTab = null
                         settlingTargetTab = null
+                        var settleJobLaunched = false
 
                         var releaseX = down.position.x
                         var releaseY = down.position.y
@@ -591,6 +595,7 @@ private fun FloatingLiquidGlassDock(
                                 pendingTargetTab = null
                             }
 
+                            if (wasDragging) isSettlingFromDrag = true
                             isPressed = false
                             isDragging = false
                             hoverTabState = null
@@ -598,9 +603,14 @@ private fun FloatingLiquidGlassDock(
                             // 2. Decorative lens spring settles cleanly in background without blocking UI navigation
                             val destinationOffset = LiquidDockMath.offsetForTab(targetTab, slotW, count)
                             activeLensJob?.cancel()
+                            settleJobLaunched = true
                             activeLensJob = coroutineScope.launch {
-                                if (wasDragging) {
-                                    lensX.snapTo(startOffsetForSettle)
+                                try {
+                                    if (wasDragging) {
+                                        lensX.snapTo(startOffsetForSettle)
+                                    }
+                                } finally {
+                                    isSettlingFromDrag = false
                                 }
                                 lensX.animateTo(
                                     targetValue = destinationOffset,
@@ -613,6 +623,7 @@ private fun FloatingLiquidGlassDock(
                         } finally {
                             holdJob?.cancel()
                             holdJob = null
+                            if (!settleJobLaunched) isSettlingFromDrag = false
                             isPressed = false
                             isDragging = false
                             hoverTabState = null
@@ -626,7 +637,7 @@ private fun FloatingLiquidGlassDock(
                 Box(
                     modifier = Modifier
                         .offset {
-                            val xPx = if (isDragging) dragOffsetState.floatValue else lensX.value
+                            val xPx = if (isDragging || isSettlingFromDrag) dragOffsetState.floatValue else lensX.value
                             IntOffset((xPx + innerInsetPx + padPx).roundToInt(), 0)
                         }
                         .align(Alignment.CenterStart)

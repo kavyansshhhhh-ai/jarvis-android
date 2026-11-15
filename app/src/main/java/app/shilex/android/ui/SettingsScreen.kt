@@ -385,7 +385,7 @@ private fun SettingsMainContent(
                 (hindiCatalog.femaleVoices + hindiCatalog.maleVoices)
                     .firstOrNull { it.id == selectedVoiceId }
                     ?.displayName
-                    ?: "Custom Hindi voice"
+                    ?: "Default Hindi voice"
             }
         }
         Section("JARVIS VOICE") {

@@ -43,7 +43,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -53,7 +52,6 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.shilex.android.Branding
 import app.shilex.android.assistant.AssistantViewModel
-import app.shilex.android.audio.HindiVoiceCatalog
 import app.shilex.android.audio.TtsVoiceInfo
 import java.util.Locale
 
@@ -68,7 +66,6 @@ fun JarvisVoiceSubScreen(
     assistant: AssistantViewModel,
     onBack: () -> Unit,
 ) {
-    val context = LocalContext.current
     val speaker = remember { assistant.speaker }
     val hindiCatalog by speaker.hindiCatalog.collectAsStateWithLifecycle()
     val isReady by speaker.isTtsReadyState.collectAsStateWithLifecycle()
@@ -152,10 +149,10 @@ fun JarvisVoiceSubScreen(
                         color = CoralError,
                     )
                     OutlinedButton(
-                        onClick = { speaker.initTts { assistant.refreshTtsVoices() } },
+                        onClick = { speaker.retryTts { assistant.refreshTtsVoices() } },
                         shape = RoundedCornerShape(50),
                     ) {
-                        Text("Try Again", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
+                        Text("Retry", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -174,6 +171,7 @@ fun JarvisVoiceSubScreen(
                 selectedVoiceId = selectedVoiceId,
                 previewingVoiceId = previewingVoiceId,
                 onSelectVoice = { id ->
+                    speaker.stopPreview()
                     selectedVoiceId = id
                     assistant.ttsVoiceId = id
                 },
@@ -195,50 +193,13 @@ fun JarvisVoiceSubScreen(
                 selectedVoiceId = selectedVoiceId,
                 previewingVoiceId = previewingVoiceId,
                 onSelectVoice = { id ->
+                    speaker.stopPreview()
                     selectedVoiceId = id
                     assistant.ttsVoiceId = id
                 },
                 onPreviewVoice = { id -> speaker.previewVoice(id) },
                 onStopPreview = { speaker.stopPreview() },
             )
-        }
-
-        // Install option shown cleanly whenever Hindi voices are missing or fewer than 5
-        val needsMoreHindiVoices =
-            hindiCatalog.femaleVoices.size < HindiVoiceCatalog.TARGET_COUNT_PER_CATEGORY ||
-                hindiCatalog.maleVoices.size < HindiVoiceCatalog.TARGET_COUNT_PER_CATEGORY
-
-        if (needsMoreHindiVoices) {
-            GlassCard(verticalPadding = 14) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "Need more Hindi voices?",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = PureWhite,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        text = "You can download or enable additional Hindi voices in your phone's voice settings.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Muted,
-                    )
-                    OutlinedButton(
-                        onClick = {
-                            speaker.stopPreview()
-                            if (!speaker.openHindiVoiceDataSettings(context)) {
-                                speaker.initTts { assistant.refreshTtsVoices() }
-                            }
-                        },
-                        shape = RoundedCornerShape(50),
-                    ) {
-                        Text(
-                            text = "Install Hindi Voices",
-                            color = ElectricCyan,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                }
-            }
         }
 
         // Useful working speech playback controls preserved without extra section headers
@@ -286,6 +247,7 @@ fun JarvisVoiceSubScreen(
             ) {
                 TextButton(
                     onClick = {
+                        speaker.stopPreview()
                         assistant.restoreDefaultTtsVoice()
                         selectedVoiceId = null
                         speechRate = 1.0f
@@ -378,8 +340,30 @@ private fun VoiceChoiceList(
                             modifier = Modifier.size(14.dp),
                         )
                     }
-                    Spacer(Modifier.width(8.dp))
+                } else {
+                    val selectInteraction = remember { MutableInteractionSource() }
+                    Box(
+                        modifier = Modifier
+                            .glassPressScale(selectInteraction)
+                            .clip(RoundedCornerShape(50))
+                            .background(accent.copy(alpha = 0.16f))
+                            .border(0.8.dp, accent.copy(alpha = 0.5f), RoundedCornerShape(50))
+                            .clickable(
+                                interactionSource = selectInteraction,
+                                indication = null,
+                            ) { onSelectVoice(voice.id) }
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "Select",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = PureWhite,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                 }
+                Spacer(Modifier.width(8.dp))
 
                 val previewInteraction = remember { MutableInteractionSource() }
                 Box(

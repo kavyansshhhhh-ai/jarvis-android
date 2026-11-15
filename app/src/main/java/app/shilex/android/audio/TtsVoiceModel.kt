@@ -1,5 +1,6 @@
 package app.shilex.android.audio
 
+import android.content.Context
 import java.util.Locale
 
 /**
@@ -116,7 +117,23 @@ object BundledHindiVoices {
 
     val ALL: List<BundledHindiVoice> = listOf(PRIYAMVADA, PRATHAM, ROHAN)
 
+    /**
+     * True only when an in-app neural TTS synthesizer (e.g. Piper/VITS ONNX runtime) is integrated
+     * and paired with physical `.onnx` weights in APK assets.
+     */
+    const val IS_OFFLINE_SYNTHESIS_INTEGRATED = false
+
     fun find(voiceId: String?): BundledHindiVoice? = ALL.firstOrNull { it.id == voiceId }
+
+    fun isModelBundled(context: Context?, voice: BundledHindiVoice): Boolean {
+        if (!IS_OFFLINE_SYNTHESIS_INTEGRATED || context == null) return false
+        val hasModel = runCatching { context.assets.open(voice.modelAssetPath).use { true } }.getOrDefault(false)
+        val hasConfig = runCatching { context.assets.open(voice.configAssetPath).use { true } }.getOrDefault(false)
+        return hasModel && hasConfig
+    }
+
+    fun availableForRuntime(context: Context?): List<TtsVoiceInfo> =
+        ALL.filter { isModelBundled(context, it) }.map { it.toTtsVoiceInfo() }
 }
 
 /**
@@ -248,7 +265,6 @@ object VoiceClassifier {
                     isBundled = false,
                 )
             }
-            .filter { it.gender != VoiceGender.Unspecified }
             .toList()
 
         val allCombined = (bundledVoices + systemHindi)
