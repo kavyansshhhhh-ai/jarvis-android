@@ -30,6 +30,7 @@ sealed interface LocalCommand {
     data object ListApps : LocalCommand
     data class SearchApps(val query: String) : LocalCommand
     data object Stop : LocalCommand
+    data object Shutdown : LocalCommand
 }
 
 enum class MediaKey { Play, Pause, Next, Previous }
@@ -49,7 +50,8 @@ object LocalRouter {
         val s = normalize(text)
         if (s.isEmpty()) return null
         if (MORE.containsMatchIn(s)) return null // several requests or a message: Gemini's job
-        return stop(s)
+        return shutdown(s)
+            ?: stop(s)
             ?: timer(s)
             ?: alarm(s)
             ?: systemPanel(s)
@@ -100,6 +102,9 @@ object LocalRouter {
     }
 
     private fun has(s: String, vararg words: String) = words.any { Regex("\\b$it\\b").containsMatchIn(s) }
+
+    private fun shutdown(s: String): LocalCommand? =
+        if (s in SHUTDOWNS || SHUTDOWN_REGEX.containsMatchIn(s)) LocalCommand.Shutdown else null
 
     private fun stop(s: String) = if (s in STOPS) LocalCommand.Stop else null
 
@@ -251,6 +256,25 @@ object LocalRouter {
     private val STOPS = setOf(
         "stop", "cancel", "bas", "ruko", "ruk jao", "chup", "never mind", "nevermind", "kuch nahi", "rehne",
         "go to sleep", "so jao", "standby", "that s all", "thats all", "bye",
+    )
+    private val SHUTDOWNS = setOf(
+        "shut down",
+        "shutdown",
+        "turn yourself off",
+        "power off",
+        "band ho jao",
+        "abhi band ho jao",
+        "khud ko band kar lo",
+        "khud ko band kar",
+        "ab tumhari zarurat nahi hai",
+        "ab tumhari zarurat nahi hai khud ko band kar lo",
+        "ab tumhari jarurat nahi hai khud ko band kar lo",
+        "ab tumhari jarurat nahi hai",
+        "assistant band",
+        "jarvis band",
+    )
+    private val SHUTDOWN_REGEX = Regex(
+        """\b(khud ko band|tumhari (?:zarurat|jarurat) nahi|abhi band ho jao|(?:assistant|jarvis)\s*band|shut\s*down(?:\s+jarvis)?|turn\s+yourself\s+off|power\s+off\s+jarvis)\b""",
     )
     private val PLAYS = setOf(
         "play", "resume", "play music", "resume music", "music play", "music resume", "music on", "music chalu",

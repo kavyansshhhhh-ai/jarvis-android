@@ -111,7 +111,10 @@ fun SettingsScreen(assistant: AssistantViewModel) {
         label = "settingsFolderNav",
     ) { folder ->
         when (folder) {
-            SettingsFolder.Permissions -> PermissionsSubScreen(onBack = { activeFolder = SettingsFolder.Main })
+            SettingsFolder.Permissions -> PermissionsSubScreen(
+                assistant = assistant,
+                onBack = { activeFolder = SettingsFolder.Main },
+            )
             SettingsFolder.JarvisVoice -> JarvisVoiceSubScreen(
                 assistant = assistant,
                 onBack = { activeFolder = SettingsFolder.Main },
@@ -126,7 +129,10 @@ fun SettingsScreen(assistant: AssistantViewModel) {
 }
 
 @Composable
-private fun PermissionsSubScreen(onBack: () -> Unit) {
+private fun PermissionsSubScreen(
+    assistant: AssistantViewModel,
+    onBack: () -> Unit,
+) {
     Column(
         Modifier
             .fillMaxSize()
@@ -172,11 +178,26 @@ private fun PermissionsSubScreen(onBack: () -> Unit) {
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                "Manage every Android runtime permission, system setting, and background capability JARVIS uses in one place.",
+                "Manage every Android runtime permission, system setting, and automation category in one place.",
                 style = MaterialTheme.typography.bodySmall,
                 color = Muted,
                 modifier = Modifier.padding(top = 4.dp),
             )
+        }
+
+        Section("Automation Permissions") {
+            app.shilex.android.data.AutomationCategory.entries.forEachIndexed { idx, cat ->
+                if (idx > 0) GlassDivider()
+                var enabled by remember { mutableStateOf(assistant.isAutomationEnabled(cat)) }
+                SwitchRow(
+                    title = cat.title,
+                    detail = cat.summary,
+                    checked = enabled,
+                ) { checked ->
+                    enabled = checked
+                    assistant.setAutomationEnabled(cat, checked)
+                }
+            }
         }
 
         PermissionCenterPanel(compact = false, showBatchAllowBar = true)

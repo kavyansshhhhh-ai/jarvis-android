@@ -1,8 +1,9 @@
 package app.shilex.android.local
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.media.AudioAttributes
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -11,20 +12,24 @@ import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
+import androidx.core.content.ContextCompat
 import app.shilex.android.Diag
 import app.shilex.android.assistant.VoiceService
 import app.shilex.android.assistant.VoiceSession
 import app.shilex.android.audio.AudioPlaybackState
+import app.shilex.android.audio.MicRecorder
 import app.shilex.android.audio.MusicPause
 import app.shilex.android.audio.Speaker
+import app.shilex.android.audio.TalkOver
+import app.shilex.android.audio.VOICE_LEVEL
+import app.shilex.android.audio.headphonesConnected
+import app.shilex.android.audio.pcmLevel
 import app.shilex.android.data.Settings
 import app.shilex.android.learn.Habits
+import app.shilex.android.wake.VoiceIndicator
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.util.Locale
 
 /** What a local turn is doing, for the Home screen. */
 enum class LocalPhase { Idle, Listening, Doing, Speaking }
@@ -44,6 +49,9 @@ class LocalTurn private constructor(private val context: Context) {
     private val offline = OfflineSpeech.get(context)
     private val speaker = Speaker.get(context)
     private var recognizer: SpeechRecognizer? = null
+    private var bargeInMic: MicRecorder? = null
+    private val bargeInTalkOver = TalkOver(speaker, level = BARGE_IN_LEVEL, chunks = 2)
+    @Volatile private var bargeInConsecutiveChunks = 0
     private var heardAt = 0L
 
     @Volatile var active = false
@@ -75,6 +83,7 @@ class LocalTurn private constructor(private val context: Context) {
         val kind = recogniser() ?: return false.also { Diag.i("local: no allowed speech recogniser, using Gemini") }
         active = true
         _phase.value = LocalPhase.Listening
+        VoiceIndicator.onListening(0f)
         VoiceService.start(context) // stops the wake listener so the recogniser gets the mic
         musicPause.pause()
         warmUpVoice()
@@ -161,9 +170,15 @@ class LocalTurn private constructor(private val context: Context) {
         // Phrases learned from earlier Gemini fallbacks run locally too.
         val command = LocalRouter.match(texts) ?: habits()?.lookup(texts)
         _phase.value = LocalPhase.Doing
+        VoiceIndicator.onProcessing()
         if (command == null) {
             Diag.i("local: no local match, asking Gemini")
             handOff(texts.firstOrNull())
+            return
+        }
+        if (command == LocalCommand.Shutdown) {
+            ActivityLog.add(ActivityLog.Entry(label(command), "Shutting down completely.", local = true))
+            VoiceSession.get(context).shutdownCompletely("local voice shutdown")
             return
         }
         // Music commands talk to the music app, so give its audio back first.
@@ -185,6 +200,7 @@ class LocalTurn private constructor(private val context: Context) {
 
     private fun handOff(text: String?) {
         text?.let { habits()?.expect(it) }
+        stopBargeInMonitor()
         active = false
         _phase.value = LocalPhase.Idle
         musicPause.resume()
@@ -196,25 +212,41 @@ class LocalTurn private constructor(private val context: Context) {
     private fun hourNow() = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
 
     /** Immediately stops any local listening or local TTS reply. */
-    fun stop() {
-        if (!active && _phase.value == LocalPhase.Idle) return
-        closeRecognizer()
-        offline.release()
-        speaker.flush()
-        finish()
+    fun stop(releaseModel: Boolean = false) {
+        stopBargeInMonitor()
+        if (active || _phase.value != LocalPhase.Idle) {
+            closeRecognizer()
+            speaker.flush()
+            finish()
+        }
+        if (releaseModel) {
+            offline.pinForWake(false)
+            offline.release()
+        }
     }
 
-    /** Cuts off a local spoken reply if currently speaking. */
-    fun interrupt() {
-        if (_phase.value == LocalPhase.Speaking) {
-            speaker.flush()
+    /** Cuts off a local spoken reply if currently speaking and optionally resumes listening. */
+    fun interrupt(resumeListening: Boolean = false) {
+        if (_phase.value != LocalPhase.Speaking && !speaker.isAudible(tailMs = 0)) return
+        Diag.i("local: interrupted while speaking (resumeListening=$resumeListening)")
+        stopBargeInMonitor()
+        speaker.flush()
+        AudioPlaybackState.onLocalTtsEnded()
+        VoiceIndicator.onInterrupted("local barge-in")
+        if (resumeListening) {
+            active = false
+            _phase.value = LocalPhase.Idle
+            VoiceSession.get(context).start()
+        } else {
             finish()
         }
     }
 
     private fun finish() {
+        stopBargeInMonitor()
         active = false
         _phase.value = LocalPhase.Idle
+        VoiceIndicator.off("local turn done")
         musicPause.resume()
         VoiceService.stop(context) // back to the wake listener
         main.postDelayed(::shutDownVoice, SHUTDOWN, VOICE_IDLE_MS)
@@ -236,9 +268,57 @@ class LocalTurn private constructor(private val context: Context) {
             return
         }
         _phase.value = LocalPhase.Speaking
-        speaker.speak(reply) {
-            main.post(::finish)
+        VoiceIndicator.onSpeaking(0.45f)
+        startBargeInMonitor()
+        speaker.speak(
+            text = reply,
+            onInterrupted = {
+                stopBargeInMonitor()
+            },
+        ) {
+            main.post {
+                stopBargeInMonitor()
+                finish()
+            }
         }
+    }
+
+    private fun startBargeInMonitor() {
+        stopBargeInMonitor()
+        if (!settings.talkOver) return
+        val hasMic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (!hasMic) return
+        bargeInTalkOver.reset(newConversation = true)
+        bargeInConsecutiveChunks = 0
+        val recorder = MicRecorder { raw ->
+            if (_phase.value != LocalPhase.Speaking) return@MicRecorder
+            val cleaned = bargeInTalkOver.clean(raw)
+            val useStrictThreshold = settings.halfDuplex && !headphonesConnected(context)
+            val interruptedByVoice = if (useStrictThreshold) {
+                val lvl = pcmLevel(cleaned)
+                if (lvl >= BARGE_IN_LEVEL) {
+                    bargeInConsecutiveChunks++
+                    bargeInConsecutiveChunks >= 3
+                } else {
+                    bargeInConsecutiveChunks = 0
+                    false
+                }
+            } else {
+                pcmLevel(cleaned) >= VOICE_LEVEL
+            }
+            if (interruptedByVoice) {
+                main.post { interrupt(resumeListening = true) }
+            }
+        }
+        if (recorder.start()) {
+            bargeInMic = recorder
+        }
+    }
+
+    private fun stopBargeInMonitor() {
+        bargeInConsecutiveChunks = 0
+        bargeInMic?.stop()
+        bargeInMic = null
     }
 
     private fun shutDownVoice() {
@@ -263,9 +343,11 @@ class LocalTurn private constructor(private val context: Context) {
             LocalCommand.ListApps -> "Installed apps"
             is LocalCommand.SearchApps -> "App check: ${command.query}"
             LocalCommand.Stop -> "Stop"
+            LocalCommand.Shutdown -> "Shut down"
         }
 
         private const val MIC_HANDOVER_MS = 160L
+        private const val BARGE_IN_LEVEL = 1_650
         private const val VOICE_IDLE_MS = 5 * 60_000L // keeps the speech model and voice loaded
         private val SHUTDOWN = Any()
 

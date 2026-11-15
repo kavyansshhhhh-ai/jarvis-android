@@ -54,6 +54,7 @@ class LocalActions(private val context: Context) {
         }
         is LocalCommand.SearchApps -> searchApps(command.query)
         LocalCommand.Stop -> LocalResult("Okay.")
+        LocalCommand.Shutdown -> LocalResult("Band ho raha hoon.")
     }
 
     private fun setVolume(stream: AudioStream, percent: Int): LocalResult {

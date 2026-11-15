@@ -59,6 +59,13 @@ object Capabilities {
         Capability("hand_to_user", "Your turn", Risk.Low),
         Capability("call_contact", "Call", Risk.High, Finish.User, "Tap Call in the dialer."),
         Capability("whatsapp_send", "WhatsApp message", Risk.High, Finish.User, "Approve on the Allow card or tap Send in WhatsApp."),
+        Capability("whatsapp_open_chat", "Open WhatsApp chat", Risk.Low),
+        Capability("whatsapp_read_chat", "Read WhatsApp chat", Risk.Medium),
+        Capability("whatsapp_search_contact", "Search WhatsApp contact", Risk.Low),
+        Capability("whatsapp_call", "WhatsApp call", Risk.High, Finish.User, "WhatsApp call screen opening."),
+        Capability("playstore_search_install", "Play Store lookup/install", Risk.Medium),
+        Capability("gallery_delete_photo", "Delete photo (confirmed)", Risk.High),
+        Capability("shutdown_assistant", "Shut down JARVIS", Risk.Low),
         Capability("email_compose", "Email", Risk.High, Finish.User, "Check the email, then tap Send in the email app."),
         Capability("sms_send", "Text message", Risk.High, Finish.User, "Check the message, then tap Send in Messages."),
         Capability(

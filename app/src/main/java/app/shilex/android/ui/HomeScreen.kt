@@ -108,6 +108,7 @@ fun HomeScreen(
     onQuick: (LocalCommand) -> String,
     onSeeActivity: () -> Unit,
     favourites: List<LocalCommand> = emptyList(),
+    voiceIndicator: app.shilex.android.wake.VoiceIndicatorSnapshot = app.shilex.android.wake.VoiceIndicatorSnapshot(),
 ) {
     val context = LocalContext.current
     val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -159,19 +160,29 @@ fun HomeScreen(
                     fontWeight = FontWeight.Bold,
                     letterSpacing = (-0.5).sp,
                 )
-                Box(
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .size(7.dp)
-                        .background(if (now.live) ElectricCyan else Color(0x38FFFFFF), CircleShape)
-                        .then(
-                            if (now.live) {
-                                Modifier.shadow(4.dp, CircleShape, ambientColor = ElectricCyan, spotColor = ElectricCyan)
-                            } else {
-                                Modifier
-                            },
-                        ),
-                )
+                if (voiceIndicator.visible &&
+                    voiceIndicator.state != app.shilex.android.wake.VoiceIndicatorState.OFF &&
+                    voiceIndicator.state != app.shilex.android.wake.VoiceIndicatorState.IDLE_TIMEOUT
+                ) {
+                    AnimatedVoiceIndicatorDot(
+                        snapshot = voiceIndicator,
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .padding(start = 8.dp)
+                            .size(7.dp)
+                            .background(if (now.live) ElectricCyan else Color(0x38FFFFFF), CircleShape)
+                            .then(
+                                if (now.live) {
+                                    Modifier.shadow(4.dp, CircleShape, ambientColor = ElectricCyan, spotColor = ElectricCyan)
+                                } else {
+                                    Modifier
+                                },
+                            ),
+                    )
+                }
             }
             Pill(now.badge, if (now.live) ElectricCyan else Muted)
         }

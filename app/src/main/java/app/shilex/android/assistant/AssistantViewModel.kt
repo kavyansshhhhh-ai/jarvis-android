@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.PowerManager
 import androidx.lifecycle.AndroidViewModel
 import app.shilex.android.audio.Speaker
+import app.shilex.android.data.AutomationCategory
 import app.shilex.android.data.PersonalProfile
 import app.shilex.android.data.PersonalProfileStore
 import app.shilex.android.data.Settings
@@ -19,6 +20,8 @@ import app.shilex.android.task.Task
 import app.shilex.android.task.TaskTracker
 import app.shilex.android.tools.InstalledAppInfo
 import app.shilex.android.tools.InstalledAppsRegistry
+import app.shilex.android.wake.VoiceIndicator
+import app.shilex.android.wake.VoiceIndicatorSnapshot
 import app.shilex.android.wake.VoiceProfile
 import app.shilex.android.wake.VoiceSetup
 import app.shilex.android.wake.WakeDotSize
@@ -54,6 +57,9 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Live event state for the tiny top-center wake activation dot. */
     val wakeDot: StateFlow<WakeDotState> = WakeIndicator.state
+
+    /** Synchronized voice indicator state (OFF, LISTENING, PROCESSING, SPEAKING, INTERRUPTED, IDLE_TIMEOUT). */
+    val voiceIndicator: StateFlow<VoiceIndicatorSnapshot> = VoiceIndicator.state
 
     private val _personalProfile = MutableStateFlow(profileStore.load())
     val personalProfile: StateFlow<PersonalProfile> = _personalProfile.asStateFlow()
@@ -207,6 +213,10 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
         session.stop("Stop button")
     }
 
+    fun shutdownCompletely(reason: String = "user requested shutdown") {
+        session.shutdownCompletely(reason)
+    }
+
     fun interrupt() {
         local.interrupt()
         session.interrupt()
@@ -215,6 +225,13 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     fun permissionAnswered(granted: Boolean) = session.permissionAnswered(granted)
 
     fun onPhotoPicked(uri: Uri?) = session.onPhotoPicked(uri)
+
+    fun onGalleryDeleteResult(confirmed: Boolean) = session.onGalleryDeleteResult(confirmed)
+
+    fun isAutomationEnabled(category: AutomationCategory): Boolean = settings.isAutomationEnabled(category)
+
+    fun setAutomationEnabled(category: AutomationCategory, enabled: Boolean) =
+        settings.setAutomationEnabled(category, enabled)
 
     fun micUnavailable() = session.micUnavailable()
 

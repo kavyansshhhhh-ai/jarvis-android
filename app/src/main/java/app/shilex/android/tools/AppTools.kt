@@ -5,6 +5,7 @@ import app.shilex.android.Branding
 import app.shilex.android.control.ControlRules
 import app.shilex.android.control.ControlService
 import app.shilex.android.control.ScreenText
+import app.shilex.android.task.ActiveTaskContext
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 
@@ -21,7 +22,7 @@ object AppMatch {
 
 /** Opening, listing (A-Z), and searching installed apps by name. */
 object AppTools {
-    fun all(): List<PhoneTool> = listOf(OpenApp, ListInstalledApps)
+    fun all(): List<PhoneTool> = listOf(OpenApp, ListInstalledApps, PlayStoreTools.SearchInstall)
 
     private object OpenApp : PhoneTool {
         override val name = "open_app"
@@ -34,6 +35,9 @@ object AppTools {
         )
 
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
+            if (!app.shilex.android.data.Settings(host.context).isAutomationEnabled(app.shilex.android.data.AutomationCategory.AppOpening)) {
+                return Results.failed("automation_disabled", "App opening is turned off in Settings → Permissions.")
+            }
             val query = args.text("name")
             val pm = host.context.packageManager
             val catalog = InstalledAppsRegistry.apps(host.context, forceRefresh = true)
@@ -59,6 +63,12 @@ object AppTools {
             }
             val intent = pm.getLaunchIntentForPackage(app.packageName)
                 ?: return Results.failed("no_launch", "${app.label} can't be opened from outside.")
+            ActiveTaskContext.beginTask(
+                task = "Open App",
+                application = app.label,
+                appPackage = app.packageName,
+                executionStep = "Open ${app.label}",
+            )
             val basic = InstalledApp(app.label, app.packageName)
             return openAndRead(host, intent, basic, "Opened ${app.label}.")
                 ?: host.openApp(intent, app.label, "${app.label} will open after you speak.")

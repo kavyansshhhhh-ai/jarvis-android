@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
@@ -300,6 +301,8 @@ private fun iconForPermission(id: PermissionId): ImageVector = when (id) {
     PermissionId.Microphone -> MicIcon
     PermissionId.Notifications -> Icons.Filled.Notifications
     PermissionId.Contacts -> Icons.Filled.Person
+    PermissionId.PhoneCalls -> Icons.Filled.Phone
+    PermissionId.GalleryMedia -> Icons.Filled.Star
     PermissionId.Calendar -> Icons.Filled.DateRange
     PermissionId.AccessibilityControl -> Icons.Filled.Build
     PermissionId.NotificationAccess -> Icons.Filled.Notifications

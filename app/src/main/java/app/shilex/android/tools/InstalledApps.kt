@@ -50,17 +50,68 @@ object AppCatalog {
             }
 
     fun normalizeQuery(raw: String): String {
-        val cleaned = raw.lowercase()
+        val transliterated = transliterateDevanagari(raw)
+        val cleaned = transliterated.lowercase()
             .trim()
             .removePrefix("open ")
             .removePrefix("launch ")
+            .removePrefix("start ")
             .removeSuffix(" app")
+            .removeSuffix(" kholo")
+            .removeSuffix(" khol")
             .replace(Regex("\\s+"), " ")
             .trim()
         return ALIASES[cleaned] ?: cleaned
     }
 
-    /** Finds best matching apps using exact label, startsWith, word match, then substring / package hint. */
+    /** Strips spaces/punctuation cleanly for space-agnostic matching (e.g., "last wave" == "LastWave"). */
+    fun compactKey(raw: String): String = transliterateDevanagari(raw)
+        .lowercase()
+        .filter { it.isLetterOrDigit() }
+
+    /** Simple phonetic normalization to catch Hindi/Indian-English pronunciation variants like "lost wave" <-> "lastwave". */
+    fun normalizePhonetic(raw: String): String {
+        val compact = compactKey(raw)
+        if (compact.isEmpty()) return ""
+        return compact
+            .replace("ph", "f")
+            .replace("v", "w")
+            .replace("z", "s")
+            .replace("ee", "i")
+            .replace("oo", "u")
+            .replace("aa", "a")
+            .replace(Regex("(.)\\1+"), "$1")
+    }
+
+    fun editDistance(a: String, b: String): Int {
+        if (a == b) return 0
+        if (a.isEmpty()) return b.length
+        if (b.isEmpty()) return a.length
+        val prev = IntArray(b.length + 1) { it }
+        val curr = IntArray(b.length + 1)
+        for (i in 1..a.length) {
+            curr[0] = i
+            for (j in 1..b.length) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                curr[j] = minOf(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost)
+            }
+            System.arraycopy(curr, 0, prev, 0, prev.size)
+        }
+        return prev[b.length]
+    }
+
+    /** Translates common Devanagari Hindi app queries into ASCII phonetic text cleanly. */
+    fun transliterateDevanagari(input: String): String {
+        if (input.none { it in '\u0900'..'\u097F' }) return input
+        val sb = StringBuilder(input.length * 2)
+        for (ch in input) {
+            val mapped = DEVANAGARI_MAP[ch]
+            if (mapped != null) sb.append(mapped) else sb.append(ch)
+        }
+        return sb.toString()
+    }
+
+    /** Finds best matching apps: exact -> prefix -> contains -> compact -> package -> strict phonetic/fuzzy fallback. */
     fun find(query: String, apps: List<InstalledAppInfo>, includeNonLaunchable: Boolean = false): List<InstalledAppInfo> {
         val q = normalizeQuery(query)
         if (q.isEmpty()) return emptyList()
@@ -79,20 +130,67 @@ object AppCatalog {
         val pkgMatch = sortedPool.filter { q in it.packageName.lowercase() }
         if (pkgMatch.isNotEmpty()) return pkgMatch
 
-        // If user didn't filter non-launchable explicitly, check non-launchable only as an informational fallback when requested.
-        return if (!includeNonLaunchable) emptyList() else emptyList()
+        // Space-agnostic exact match (e.g. "last wave" -> "LastWave", Devanagari "लास्ट वेव" -> "LastWave")
+        val qCompact = compactKey(q)
+        if (qCompact.length >= 3) {
+            val compactExact = sortedPool.filter { compactKey(it.label) == qCompact }
+            if (compactExact.isNotEmpty()) return compactExact
+
+            val compactContains = sortedPool.filter { qCompact in compactKey(it.label) }
+            if (compactContains.isNotEmpty()) return compactContains
+        }
+
+        // Strict phonetic + edit-distance fallback for speech typos (never matches unrelated apps)
+        val qPhonetic = normalizePhonetic(q)
+        if (qPhonetic.length >= 4) {
+            val phoneticExact = sortedPool.filter { normalizePhonetic(it.label) == qPhonetic }
+            if (phoneticExact.isNotEmpty()) return phoneticExact
+
+            val scored = sortedPool.mapNotNull { app ->
+                val lPhon = normalizePhonetic(app.label)
+                if (lPhon.length < 4) return@mapNotNull null
+                val maxLen = maxOf(qPhonetic.length, lPhon.length)
+                val dist = editDistance(qPhonetic, lPhon)
+                val maxAllowed = if (maxLen >= 7) 2 else 1
+                val sim = 1.0 - (dist.toDouble() / maxLen)
+                if (dist <= maxAllowed && sim >= 0.72) app to dist else null
+            }.sortedBy { it.second }
+            if (scored.isNotEmpty()) {
+                val bestDist = scored.first().second
+                return scored.filter { it.second == bestDist }.map { it.first }
+            }
+        }
+
+        return emptyList()
     }
 
     fun search(query: String, apps: List<InstalledAppInfo>, includeNonLaunchable: Boolean = false): List<InstalledAppInfo> {
         val q = normalizeQuery(query)
         val sorted = sortAlphabetical(if (includeNonLaunchable) apps else apps.filter { it.launchable })
         if (q.isEmpty()) return sorted
-        return sorted.filter { app ->
+        val qCompact = compactKey(q)
+        val direct = sorted.filter { app ->
             val l = app.label.lowercase()
             val p = app.packageName.lowercase()
-            q in l || q in p
+            q in l || q in p || (qCompact.length >= 3 && qCompact in compactKey(app.label))
         }
+        return direct.ifEmpty { find(query, apps, includeNonLaunchable) }
     }
+
+    private val DEVANAGARI_MAP = mapOf(
+        'अ' to "a", 'आ' to "aa", 'इ' to "i", 'ई' to "ee", 'उ' to "u", 'ऊ' to "oo",
+        'ए' to "e", 'ऐ' to "ai", 'ओ' to "o", 'औ' to "au",
+        'ा' to "a", 'ि' to "i", 'ी' to "ee", 'ु' to "u", 'ू' to "oo",
+        'े' to "e", 'ै' to "ai", 'ो' to "o", 'ौ' to "au", 'ं' to "n", 'ँ' to "n",
+        '्' to "", '़' to "",
+        'क' to "k", 'ख' to "kh", 'ग' to "g", 'घ' to "gh",
+        'च' to "ch", 'छ' to "chh", 'ज' to "j", 'झ' to "jh",
+        'ट' to "t", 'ठ' to "th", 'ड' to "d", 'ढ' to "dh", 'ण' to "n",
+        'त' to "t", 'थ' to "th", 'द' to "d", 'ध' to "dh", 'न' to "n",
+        'प' to "p", 'फ' to "f", 'ब' to "b", 'भ' to "bh", 'म' to "m",
+        'य' to "y", 'र' to "r", 'ल' to "l", 'व' to "w",
+        'श' to "sh", 'ष' to "sh", 'स' to "s", 'ह' to "h",
+    )
 
     fun summarizeAlphabetical(apps: List<InstalledAppInfo>, limit: Int = 80, includeSystem: Boolean = true): String {
         val filtered = sortAlphabetical(apps.filter { it.launchable && (includeSystem || !it.systemApp) })

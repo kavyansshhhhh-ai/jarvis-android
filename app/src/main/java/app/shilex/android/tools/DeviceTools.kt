@@ -11,7 +11,7 @@ import org.json.JSONObject
  * mute/unmute media, flashlight, battery, plus Quick Settings, Notification shade, and Android settings panels.
  */
 object DeviceTools {
-    fun all(): List<PhoneTool> = listOf(DeviceControl, OpenSystemPanel)
+    fun all(): List<PhoneTool> = listOf(DeviceControl, OpenSystemPanel, ShutdownAssistant)
 
     private val ACTIONS = listOf(
         "volume_set", "volume_up", "volume_down", "mute", "mute_media", "unmute", "unmute_media", "torch_on", "torch_off", "battery",
@@ -64,6 +64,22 @@ object DeviceTools {
             } else {
                 Results.done(result.reply.ifEmpty { "Opened ${target.label}." })
             }
+        }
+    }
+
+    private object ShutdownAssistant : PhoneTool {
+        override val name = "shutdown_assistant"
+
+        override fun declaration() = Schema.function(
+            name,
+            "Completely stops JARVIS speaking, active voice listening, background wake-word standby, and overlays when the user says they don't need JARVIS or tells JARVIS to turn off (e.g. 'abhi band ho jao', 'khud ko band kar lo').",
+            Schema.string("reason", "Short reason from the user's request."),
+        )
+
+        override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
+            val reason = args.text("reason").ifEmpty { "user requested shutdown" }
+            host.shutdownAssistant(reason)
+            return Results.done("Shut down JARVIS voice listening and standby completely.")
         }
     }
 

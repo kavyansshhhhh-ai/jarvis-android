@@ -70,8 +70,9 @@ class ControlService : AccessibilityService() {
         val restrictedBySystem: Boolean = false,
         val meta: Map<Int, NodeMeta> = emptyMap(),
         val signature: String = "",
+        val allowPlayStore: Boolean = false,
     ) {
-        val blocked get() = ControlRules.blocked(packageName)
+        val blocked get() = ControlRules.blocked(packageName, allowPlayStoreAutomation = allowPlayStore)
         val upiApp get() = ControlRules.isSupportedUpiApp(packageName)
         val financeApp get() = ControlRules.isFinanceApp(packageName)
     }
@@ -113,23 +114,23 @@ class ControlService : AccessibilityService() {
     }
 
     /** Reads the app in front. Blocked apps, sensitive PIN/OTP/password screens, and system-restricted nodes come back without contents. */
-    fun snapshot(): Snapshot? {
+    fun snapshot(allowPlayStore: Boolean = false): Snapshot? {
         val root = activeRoot() ?: return null
         val pkg = root.packageName?.toString().orEmpty()
         val label = runCatching {
             packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
         }.getOrDefault(pkg)
-        if (ControlRules.blocked(pkg)) {
+        if (ControlRules.blocked(pkg, allowPlayStoreAutomation = allowPlayStore)) {
             lastNodes = emptyMap()
             lastMeta = emptyMap()
             lastElementsList = emptyList()
-            return Snapshot(pkg, label, emptyList(), false)
+            return Snapshot(pkg, label, emptyList(), false, allowPlayStore = allowPlayStore)
         }
         if (isNodeDataSensitive(root)) {
             lastNodes = emptyMap()
             lastMeta = emptyMap()
             lastElementsList = emptyList()
-            return Snapshot(pkg, label, emptyList(), false, restrictedBySystem = true)
+            return Snapshot(pkg, label, emptyList(), false, restrictedBySystem = true, allowPlayStore = allowPlayStore)
         }
         val elements = mutableListOf<ScreenElement>()
         val nodes = mutableMapOf<Int, AccessibilityNodeInfo>()
@@ -190,7 +191,7 @@ class ControlService : AccessibilityService() {
             lastNodes = emptyMap()
             lastMeta = emptyMap()
             lastElementsList = emptyList()
-            return Snapshot(pkg, label, emptyList(), false, sensitiveAuth = true)
+            return Snapshot(pkg, label, emptyList(), false, sensitiveAuth = true, allowPlayStore = allowPlayStore)
         }
         lastNodes = nodes
         lastMeta = metaMap
@@ -204,6 +205,7 @@ class ControlService : AccessibilityService() {
             restrictedBySystem = restrictedBySystem && elements.isEmpty(),
             meta = metaMap,
             signature = sig,
+            allowPlayStore = allowPlayStore,
         )
     }
 
@@ -291,22 +293,26 @@ class ControlService : AccessibilityService() {
     fun focusedField(): AccessibilityNodeInfo? =
         activeRoot()?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }
 
-    /** Scrolls the biggest scrollable area; "down" shows what is further down. */
+    /** Scrolls the primary vertical scrollable area (never mistaking narrow story strips for the main feed). */
     fun scroll(down: Boolean): Boolean {
         val root = activeRoot() ?: return false
-        var best: AccessibilityNodeInfo? = null
-        var bestArea = 0
+        val boxes = mutableListOf<Pair<InstagramMatcher.ScrollableBox, AccessibilityNodeInfo>>()
         fun visit(node: AccessibilityNodeInfo) {
             if (node.isScrollable && node.isVisibleToUser) {
                 val r = Rect().also(node::getBoundsInScreen)
-                if (r.width() * r.height() > bestArea) {
-                    best = node
-                    bestArea = r.width() * r.height()
-                }
+                val vid = node.viewIdResourceName?.substringAfterLast('/').orEmpty()
+                boxes += InstagramMatcher.ScrollableBox(
+                    id = boxes.size,
+                    widthPx = r.width(),
+                    heightPx = r.height(),
+                    viewId = vid,
+                ) to node
             }
             for (i in 0 until node.childCount) node.getChild(i)?.let(::visit)
         }
         visit(root)
+        val pickedId = InstagramMatcher.pickMainVerticalScrollContainer(boxes.map { it.first })
+        val best = pickedId?.let { id -> boxes.firstOrNull { it.first.id == id }?.second }
         val action = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
         if (best?.performAction(action) == true) return true
         val metrics = resources.displayMetrics

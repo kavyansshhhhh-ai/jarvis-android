@@ -56,6 +56,7 @@ class LocalRouterTest {
         check(Alarm(6, 0, null), "6 baje ka alarm laga do")
         check(Alarm(18, 15, null), "alarm for 18:15")
         check(LocalCommand.Stop, "stop", "bas", "ruk jao", "never mind")
+        check(LocalCommand.Shutdown, "abhi band ho jao", "khud ko band kar lo", "shut down", "turn yourself off", "assistant band karo")
     }
 
     @Test

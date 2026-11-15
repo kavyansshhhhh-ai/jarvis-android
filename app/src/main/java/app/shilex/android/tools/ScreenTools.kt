@@ -5,22 +5,35 @@ import android.view.accessibility.AccessibilityNodeInfo
 import app.shilex.android.Branding
 import app.shilex.android.control.ControlRules
 import app.shilex.android.control.ControlService
+import app.shilex.android.control.InstagramMatcher
 import app.shilex.android.control.ScreenText
 import app.shilex.android.control.ScreenVision
 import app.shilex.android.control.SightAim
+import app.shilex.android.data.AutomationCategory
 import app.shilex.android.data.KeyVault
+import app.shilex.android.data.Settings as AppSettings
+import app.shilex.android.task.ActiveTaskContext
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 
 /**
- * Phone control through Accessibility, same tool names as desktop. The model reads the
- * screen, then taps / types / scrolls by element number. Risky taps wait for the user's
- * Allow on JARVIS's own card; money, password and settings apps are never touched.
+ * Phone control through Accessibility plus Scoped-Storage Gallery deletion.
+ * Supports Instagram control disambiguation, honors Settings automation categories cleanly,
+ * and strictly preserves money/credential/destructive/finance protections.
  */
 object ScreenTools {
-    fun all(): List<PhoneTool> = listOf(UiRead, UiDescribeScreen, UiClick, UiTapSeen, UiType, UiScroll, UiKey, HandToUser)
+    fun all(): List<PhoneTool> = listOf(
+        UiRead,
+        UiDescribeScreen,
+        UiClick,
+        UiTapSeen,
+        UiType,
+        UiScroll,
+        UiKey,
+        HandToUser,
+        GalleryTools.DeletePhoto,
+    )
 
-    /** The control service, or the tool result explaining why it can't be used. */
     private fun control(): Pair<ControlService?, JSONObject?> {
         val service = ControlService.instance
             ?: return null to Results.failed(
@@ -33,7 +46,6 @@ object ScreenTools {
         return service to null
     }
 
-    /** Reads the screen after an action, verifying whether content actually changed. */
     private suspend fun afterAction(
         service: ControlService,
         did: String,
@@ -63,6 +75,7 @@ object ScreenTools {
                     "Hand control back to the user with hand_to_user and explain why.",
             )
         }
+        ActiveTaskContext.updateScreen(snap.appLabel, snap.signature.take(80))
         val transitionNote = when {
             beforeSig.isEmpty() -> ""
             snap.signature != beforeSig -> "(Screen updated.) "
@@ -99,7 +112,6 @@ object ScreenTools {
         "$app or Android blocked Accessibility access on this screen for security. Never bypass secure windows—hand control back to the user with hand_to_user and explain why.",
     )
 
-    /** Paying is always the user's: a pay or buy tap is refused, not offered on the Allow card. */
     private fun payment(label: String, summary: String = "") = Results.failed(
         "payment_is_users",
         buildString {
@@ -118,6 +130,9 @@ object ScreenTools {
         )
 
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
+            if (!AppSettings(host.context).isAutomationEnabled(AutomationCategory.ScreenReading)) {
+                return Results.failed("automation_disabled", "Screen reading is turned off in Settings → Permissions.")
+            }
             val (service, problem) = control()
             service ?: return problem!!
             val fg = service.foregroundPackage()
@@ -140,16 +155,24 @@ object ScreenTools {
             if (snap.financeApp && (snap.elements.isEmpty() || snap.restrictedBySystem)) {
                 return accessibilityRestricted(snap.appLabel)
             }
+            ActiveTaskContext.updateScreen(snap.appLabel, snap.signature.take(80))
             val summary = if (snap.financeApp) ControlRules.extractTransactionSummary(snap.elements) else ""
+            val igHints = if (snap.packageName == InstagramMatcher.INSTAGRAM_PACKAGE) {
+                val msg = (InstagramMatcher.resolveControl(snap.elements, snap.meta, InstagramMatcher.TargetIntent.Messages) as? InstagramMatcher.MatchOutcome.Matched)?.element?.number
+                val search = (InstagramMatcher.resolveControl(snap.elements, snap.meta, InstagramMatcher.TargetIntent.Search) as? InstagramMatcher.MatchOutcome.Matched)?.element?.number
+                val parts = listOfNotNull(
+                    msg?.let { "Instagram Messages/DM=#$it" },
+                    search?.let { "Instagram Search=#$it" },
+                )
+                if (parts.isNotEmpty()) "Detected Instagram controls: ${parts.joinToString(", ")}\n" else ""
+            } else {
+                ""
+            }
             val body = ScreenText.describe(snap.appLabel, snap.elements, snap.more)
-            return Results.done(if (summary.isNotEmpty()) "Summary on screen: $summary\n$body" else body)
+            return Results.done((if (summary.isNotEmpty()) "Summary on screen: $summary\n" else "") + igHints + body)
         }
     }
 
-    /**
-     * Understands a visible photo/image in WhatsApp or any allowed app after clear user permission.
-     * Respects FLAG_SECURE: when Android blocks screenshot capture, opens Android Photo Picker instead.
-     */
     private object UiDescribeScreen : PhoneTool {
         override val name = "ui_describe_screen"
 
@@ -213,17 +236,20 @@ object ScreenTools {
         override fun declaration() = Schema.function(
             name,
             "Taps an element from the last ui_read, by number (preferred) or exact label. Send, call, " +
-                "delete, book and sensitive payment-prep taps show the user an Allow button first; final pay, buy, and PIN/OTP/password taps are refused.",
+                "delete, book and sensitive payment-prep taps show Allow when needed; final pay, buy, and PIN/OTP/password taps are refused.",
             Schema.integer("number", "Element number from ui_read."),
             Schema.string("label", "The element's label, if no number."),
         )
 
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
+            if (!AppSettings(host.context).isAutomationEnabled(AutomationCategory.ScreenInteraction)) {
+                return Results.failed("automation_disabled", "Screen interaction is turned off in Settings → Permissions.")
+            }
             val (service, problem) = control()
             service ?: return problem!!
             val node = target(service, args) ?: return Results.failed(
                 "not_found",
-                "No such element on screen now. Call ui_read and use a number from it.",
+                "No confident matching element on screen now. Call ui_read and pick an exact number.",
             )
             node.second?.let { return it }
             val target = node.first!!
@@ -242,7 +268,10 @@ object ScreenTools {
             val summary = if (ControlRules.isFinanceApp(pkg)) ControlRules.extractTransactionSummary(service.lastElements()) else ""
             val risk = ControlRules.clickRisk(label, viewId, pkg)
             if (risk == ControlRules.Risk.Money) return payment(label, summary)
-            if (risk != ControlRules.Risk.Safe) {
+            val skipOutgoingPrompt = risk == ControlRules.Risk.Outgoing &&
+                !ControlRules.isFinanceApp(pkg) &&
+                AppSettings(host.context).isAutomationEnabled(AutomationCategory.ScreenInteraction)
+            if (risk != ControlRules.Risk.Safe && !skipOutgoingPrompt) {
                 val shortLabel = ScreenText.shorten(label.ifEmpty { "this button" })
                 val what = if (summary.isNotEmpty()) "Tap \"$shortLabel\" ($summary)" else "Tap \"$shortLabel\""
                 if (!service.overlay.confirm(what)) {
@@ -261,7 +290,6 @@ object ScreenTools {
             return afterAction(service, "Tapped \"${ScreenText.shorten(label)}\".", beforeSig = beforeSig)
         }
 
-        /** (node, null) when found, (null, question) when several labels match, null when none. */
         private fun target(service: ControlService, args: JSONObject): Pair<AccessibilityNodeInfo?, JSONObject?>? {
             val number = args.optInt("number", 0)
             if (number > 0) return service.node(number)?.let { it to null }
@@ -276,6 +304,19 @@ object ScreenTools {
             if (snap.sensitiveAuth) return null to sensitiveAuth(snap.appLabel)
             if (snap.financeApp && (snap.elements.isEmpty() || snap.restrictedBySystem)) {
                 return null to accessibilityRestricted(snap.appLabel)
+            }
+            if (snap.packageName == InstagramMatcher.INSTAGRAM_PACKAGE) {
+                val igIntent = InstagramMatcher.inferIntent(label)
+                if (igIntent != null) {
+                    when (val res = InstagramMatcher.resolveControl(snap.elements, snap.meta, igIntent)) {
+                        is InstagramMatcher.MatchOutcome.Matched -> return service.node(res.element.number)?.let { it to null }
+                        is InstagramMatcher.MatchOutcome.Ambiguous -> return null to Results.ask(
+                            "Multiple Instagram controls look like \"$label\". Ask which one.",
+                            res.candidates.take(5).map { "${it.number}. ${it.label}" },
+                        )
+                        InstagramMatcher.MatchOutcome.NotFound -> Unit
+                    }
+                }
             }
             val matches = ScreenText.find(snap.elements, label)
             return when {
@@ -300,6 +341,9 @@ object ScreenTools {
         )
 
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
+            if (!AppSettings(host.context).isAutomationEnabled(AutomationCategory.ScreenInteraction)) {
+                return Results.failed("automation_disabled", "Screen interaction is turned off in Settings → Permissions.")
+            }
             val (service, problem) = control()
             service ?: return problem!!
             if (service.isSensitiveAuthActive()) return sensitiveAuth("authentication screen")
@@ -329,22 +373,19 @@ object ScreenTools {
         }
     }
 
-    /**
-     * Click-by-sight: for buttons ui_read can't name (games, image-only buttons, canvases).
-     * Never uploads screenshots of banking or UPI screens. The tap's risk is the worst of what
-     * the model asked for, what Gemini saw there and the control Android reports at that point.
-     */
     private object UiTapSeen : PhoneTool {
         override val name = "ui_tap_seen"
 
         override fun declaration() = Schema.function(
             name,
-            "Taps something by looking at the screen. Only when ui_read doesn't list it (image buttons, " +
-                "games). Sends a screenshot to Gemini (disabled on banking/UPI screens for security). Send, call, delete and similar taps show Allow first; pay and PIN/OTP/password taps are refused.",
+            "Taps something by looking at the screen ONLY when ui_read cannot identify it (image buttons, canvases). Never runs on banking/UPI screens; pay and PIN/OTP/password taps are refused.",
             Schema.string("target", "What to tap, as seen: e.g. \"the red play button in the middle\".", required = true),
         )
 
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
+            if (!AppSettings(host.context).isAutomationEnabled(AutomationCategory.ScreenInteraction)) {
+                return Results.failed("automation_disabled", "Screen interaction is turned off in Settings → Permissions.")
+            }
             val (service, problem) = control()
             service ?: return problem!!
             val target = args.text("target").ifEmpty { return Results.failed("no_target", "Say what to tap.") }
@@ -398,11 +439,6 @@ object ScreenTools {
         }
     }
 
-    /**
-     * Secure-screen handover: the steps JARVIS must not do (final Pay authorization, a PIN,
-     * a password, an OTP, or an Accessibility-restricted screen) go to the user with a
-     * "Your turn" card; after Done, JARVIS inspects only the visible non-sensitive result screen.
-     */
     private object HandToUser : PhoneTool {
         override val name = "hand_to_user"
 
@@ -444,6 +480,9 @@ object ScreenTools {
         )
 
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
+            if (!AppSettings(host.context).isAutomationEnabled(AutomationCategory.ScreenInteraction)) {
+                return Results.failed("automation_disabled", "Screen interaction is turned off in Settings → Permissions.")
+            }
             val (service, problem) = control()
             service ?: return problem!!
             val pkg = service.foregroundPackage()

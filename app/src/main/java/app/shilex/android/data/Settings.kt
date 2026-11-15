@@ -6,8 +6,66 @@ import app.shilex.android.wake.WakeDotSize
 import app.shilex.android.wake.WakeIndicatorController
 
 /** Plain preferences (no secrets). Defaults match the desktop app. */
+enum class AutomationCategory(
+    val key: String,
+    val title: String,
+    val summary: String,
+    val defaultEnabled: Boolean = true,
+) {
+    WhatsAppMessages(
+        key = "auto_whatsapp_messages",
+        title = "WhatsApp message automation",
+        summary = "Type drafts and tap Send for clear WhatsApp commands without repetitive internal Allow popups.",
+    ),
+    Calling(
+        key = "auto_calling",
+        title = "Calling automation",
+        summary = "Start unambiguous phone and WhatsApp audio/video calls cleanly after your command.",
+    ),
+    AppOpening(
+        key = "auto_open_apps",
+        title = "App opening",
+        summary = "Open installed apps directly when asked without extra internal confirmations.",
+    ),
+    MediaPlayback(
+        key = "auto_media_playback",
+        title = "Media playback",
+        summary = "Search, play, pause, and skip music on your preferred music app without extra popups.",
+    ),
+    GalleryManagement(
+        key = "auto_gallery_management",
+        title = "Gallery management",
+        summary = "Locate gallery photos cleanly (deletion still ALWAYS asks explicit yes/no confirmation).",
+    ),
+    ScreenReading(
+        key = "auto_screen_reading",
+        title = "Screen reading",
+        summary = "Read visible non-sensitive app screens directly when requested.",
+    ),
+    ScreenInteraction(
+        key = "auto_screen_interaction",
+        title = "On-screen interaction",
+        summary = "Allow safe non-payment taps, typing, and scrolling inside non-financial apps.",
+    ),
+    PlayStoreNavigation(
+        key = "auto_play_store",
+        title = "Play Store navigation & free installs",
+        summary = "Search apps in Google Play Store and tap free Install (always stops for age, payment, or sign-in).",
+    );
+
+    val label: String get() = title
+    val description: String get() = summary
+}
+
 class Settings(context: Context) {
     private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+
+    fun isAutomationEnabled(category: AutomationCategory): Boolean =
+        prefs.getBoolean(category.key, category.defaultEnabled)
+
+    fun setAutomationEnabled(category: AutomationCategory, enabled: Boolean) {
+        prefs.edit().putBoolean(category.key, enabled).apply()
+    }
 
     var model: String
         get() = prefs.getString("model", DEFAULT_MODEL) ?: DEFAULT_MODEL

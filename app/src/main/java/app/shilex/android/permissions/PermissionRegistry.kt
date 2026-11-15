@@ -43,6 +43,8 @@ enum class PermissionId {
     Microphone,
     Notifications,
     Contacts,
+    PhoneCalls,
+    GalleryMedia,
     Calendar,
     AccessibilityControl,
     NotificationAccess,
@@ -242,6 +244,26 @@ object PermissionRegistry {
             manifestPermission = Manifest.permission.READ_CONTACTS,
         ),
         PermissionSpec(
+            id = PermissionId.PhoneCalls,
+            title = "Phone Calls",
+            category = PermissionCategory.Runtime,
+            reason = "Places normal cellular phone calls directly when you ask (WhatsApp calls use WhatsApp instead).",
+            dependentFeature = "Direct phone calling",
+            manifestPermission = Manifest.permission.CALL_PHONE,
+        ),
+        PermissionSpec(
+            id = PermissionId.GalleryMedia,
+            title = "Gallery Photos",
+            category = PermissionCategory.Runtime,
+            reason = "Finds a targeted photo in your gallery so JARVIS can ask confirmation before Android's delete dialog.",
+            dependentFeature = "Gallery photo lookup & confirmed deletion",
+            manifestPermission = if (sdkInt >= Build.VERSION_CODES.TIRAMISU) {
+                Manifest.permission.READ_MEDIA_IMAGES
+            } else {
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            },
+        ),
+        PermissionSpec(
             id = PermissionId.Calendar,
             title = "Calendar",
             category = PermissionCategory.Runtime,
@@ -423,6 +445,16 @@ object PermissionRegistry {
             }
         PermissionId.Contacts ->
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+        PermissionId.PhoneCalls ->
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
+        PermissionId.GalleryMedia -> {
+            val mediaPerm = if (sdkInt >= Build.VERSION_CODES.TIRAMISU) {
+                Manifest.permission.READ_MEDIA_IMAGES
+            } else {
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            }
+            ContextCompat.checkSelfPermission(context, mediaPerm) == PackageManager.PERMISSION_GRANTED
+        }
         PermissionId.Calendar ->
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED
         PermissionId.AccessibilityControl ->

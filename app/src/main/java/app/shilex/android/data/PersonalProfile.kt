@@ -114,13 +114,14 @@ object PersonalProfileResolver {
         return clean
     }
 
-    /** Maps a user/profile app name to our known music key ("spotify" or "youtube_music"). */
+    /** Maps a user/profile app name to canonical key ("spotify", "youtube_music", or normalized app name such as "lastwave"). */
     fun resolveMusicAppKey(explicitApp: String, profile: PersonalProfile): String {
         val candidate = explicitApp.ifBlank { profile.preferredMusicApp }.lowercase().trim()
+        if (candidate.isEmpty()) return ""
         return when {
             candidate.contains("spotify") -> "spotify"
-            candidate.contains("youtube") || candidate.contains("yt") -> "youtube_music"
-            else -> ""
+            candidate.contains("youtube") || candidate == "yt" || candidate.contains("yt music") -> "youtube_music"
+            else -> candidate
         }
     }
 

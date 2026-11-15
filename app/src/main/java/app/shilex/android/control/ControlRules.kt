@@ -70,6 +70,8 @@ object ControlRules {
         RegexOption.IGNORE_CASE,
     )
 
+    const val PLAY_STORE_PACKAGE = "com.android.vending"
+
     fun isSupportedUpiApp(packageName: String): Boolean = packageName in SUPPORTED_UPI_PACKAGES
 
     fun appAccess(packageName: String): AppAccess {
@@ -82,8 +84,21 @@ object ControlRules {
         }
     }
 
+    /**
+     * Scoped access check allowing explicit Play Store search/install automation ONLY when the user
+     * enabled Play Store automation in Settings; preserves default 1-arg [blocked] contract.
+     */
+    fun appAccess(packageName: String, allowPlayStoreAutomation: Boolean): AppAccess {
+        val pkg = packageName.trim()
+        if (allowPlayStoreAutomation && pkg == PLAY_STORE_PACKAGE) return AppAccess.Allowed
+        return appAccess(pkg)
+    }
+
     /** True ONLY for hard-blocked packages (self, settings, Play Store, NPCI PIN UI, password managers, authenticators). */
     fun blocked(packageName: String): Boolean = appAccess(packageName) == AppAccess.Blocked
+
+    fun blocked(packageName: String, allowPlayStoreAutomation: Boolean): Boolean =
+        appAccess(packageName, allowPlayStoreAutomation) == AppAccess.Blocked
 
     /** True for UPI and banking/wallet apps where limited user-authorized assistance applies. */
     fun isFinanceApp(packageName: String): Boolean = appAccess(packageName) == AppAccess.LimitedFinance

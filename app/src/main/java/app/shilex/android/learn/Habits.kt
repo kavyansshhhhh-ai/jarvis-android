@@ -133,6 +133,7 @@ object HabitKeys {
         is LocalCommand.OpenApp -> "app:${command.name.lowercase()}"
         is LocalCommand.Alarm,
         LocalCommand.Stop,
+        LocalCommand.Shutdown,
         is LocalCommand.SystemPanel,
         LocalCommand.ListApps,
         is LocalCommand.SearchApps,

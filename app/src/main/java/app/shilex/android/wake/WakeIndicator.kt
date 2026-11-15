@@ -225,3 +225,151 @@ object WakeIndicator {
         inAppVisible = inAppVisible,
     )
 }
+
+/** Unified lifecycle states for the JARVIS visual voice indicator dot & orb presence. */
+enum class VoiceIndicatorState {
+    OFF,
+    LISTENING,
+    PROCESSING,
+    SPEAKING,
+    INTERRUPTED,
+    IDLE_TIMEOUT,
+}
+
+data class VoiceIndicatorSnapshot(
+    val state: VoiceIndicatorState = VoiceIndicatorState.OFF,
+    val amplitude: Float = 0f,
+    val visible: Boolean = false,
+    val compactListening: Boolean = false,
+    val animatingSpeech: Boolean = false,
+    val reason: String = "",
+    val updatedAtMs: Long = 0L,
+)
+
+/**
+ * Pure JVM-testable state machine for JARVIS's voice indicator.
+ * Ensures clean transitions: OFF <-> LISTENING <-> PROCESSING <-> SPEAKING,
+ * immediate cleanup on INTERRUPTED, and full dot hide on IDLE_TIMEOUT / OFF.
+ */
+class VoiceIndicatorStateMachine {
+    private val _state = MutableStateFlow(VoiceIndicatorSnapshot())
+    val state: StateFlow<VoiceIndicatorSnapshot> = _state.asStateFlow()
+
+    fun onListening(nowMs: Long = System.currentTimeMillis(), amplitude: Float = 0f): VoiceIndicatorSnapshot {
+        val next = VoiceIndicatorSnapshot(
+            state = VoiceIndicatorState.LISTENING,
+            amplitude = amplitude.coerceIn(0f, 1f),
+            visible = true,
+            compactListening = true,
+            animatingSpeech = false,
+            updatedAtMs = nowMs,
+        )
+        _state.value = next
+        return next
+    }
+
+    fun onProcessing(nowMs: Long = System.currentTimeMillis()): VoiceIndicatorSnapshot {
+        val next = VoiceIndicatorSnapshot(
+            state = VoiceIndicatorState.PROCESSING,
+            amplitude = 0f,
+            visible = true,
+            compactListening = false,
+            animatingSpeech = false,
+            updatedAtMs = nowMs,
+        )
+        _state.value = next
+        return next
+    }
+
+    fun onSpeaking(nowMs: Long = System.currentTimeMillis(), amplitude: Float = 0.25f): VoiceIndicatorSnapshot {
+        val next = VoiceIndicatorSnapshot(
+            state = VoiceIndicatorState.SPEAKING,
+            amplitude = amplitude.coerceIn(0f, 1f),
+            visible = true,
+            compactListening = false,
+            animatingSpeech = true,
+            updatedAtMs = nowMs,
+        )
+        _state.value = next
+        return next
+    }
+
+    fun updateAmplitude(amplitude: Float): VoiceIndicatorSnapshot {
+        val cur = _state.value
+        val activeAmp = when (cur.state) {
+            VoiceIndicatorState.LISTENING, VoiceIndicatorState.SPEAKING -> amplitude.coerceIn(0f, 1f)
+            else -> 0f
+        }
+        val next = cur.copy(amplitude = activeAmp)
+        _state.value = next
+        return next
+    }
+
+    fun onInterrupted(nowMs: Long = System.currentTimeMillis(), reason: String = "interrupted"): VoiceIndicatorSnapshot {
+        val next = VoiceIndicatorSnapshot(
+            state = VoiceIndicatorState.INTERRUPTED,
+            amplitude = 0f,
+            visible = true,
+            compactListening = true,
+            animatingSpeech = false,
+            reason = reason,
+            updatedAtMs = nowMs,
+        )
+        _state.value = next
+        return next
+    }
+
+    fun onIdleTimeout(nowMs: Long = System.currentTimeMillis(), reason: String = "idle timeout"): VoiceIndicatorSnapshot {
+        val next = VoiceIndicatorSnapshot(
+            state = VoiceIndicatorState.IDLE_TIMEOUT,
+            amplitude = 0f,
+            visible = false,
+            compactListening = false,
+            animatingSpeech = false,
+            reason = reason,
+            updatedAtMs = nowMs,
+        )
+        _state.value = next
+        return next
+    }
+
+    fun off(nowMs: Long = System.currentTimeMillis(), reason: String = ""): VoiceIndicatorSnapshot {
+        val next = VoiceIndicatorSnapshot(
+            state = VoiceIndicatorState.OFF,
+            amplitude = 0f,
+            visible = false,
+            compactListening = false,
+            animatingSpeech = false,
+            reason = reason,
+            updatedAtMs = nowMs,
+        )
+        _state.value = next
+        return next
+    }
+}
+
+/** Single synchronized voice-indicator store driven strictly by actual voice/TTS state. */
+object VoiceIndicator {
+    private val machine = VoiceIndicatorStateMachine()
+    val state: StateFlow<VoiceIndicatorSnapshot> = machine.state
+
+    fun onListening(amplitude: Float = 0f, nowMs: Long = System.currentTimeMillis()) =
+        machine.onListening(nowMs = nowMs, amplitude = amplitude)
+
+    fun onProcessing(nowMs: Long = System.currentTimeMillis()) =
+        machine.onProcessing(nowMs = nowMs)
+
+    fun onSpeaking(amplitude: Float = 0.25f, nowMs: Long = System.currentTimeMillis()) =
+        machine.onSpeaking(nowMs = nowMs, amplitude = amplitude)
+
+    fun updateAmplitude(amplitude: Float) = machine.updateAmplitude(amplitude)
+
+    fun onInterrupted(reason: String = "interrupted", nowMs: Long = System.currentTimeMillis()) =
+        machine.onInterrupted(nowMs = nowMs, reason = reason)
+
+    fun onIdleTimeout(reason: String = "idle timeout", nowMs: Long = System.currentTimeMillis()) =
+        machine.onIdleTimeout(nowMs = nowMs, reason = reason)
+
+    fun off(reason: String = "", nowMs: Long = System.currentTimeMillis()) =
+        machine.off(nowMs = nowMs, reason = reason)
+}

@@ -80,6 +80,10 @@ class VoiceService : Service() {
                 Settings(this).wakeWord = false
                 Diag.i("wake: turned off from the notification")
             }
+            ACTION_SHUTDOWN -> {
+                VoiceSession.get(this).shutdownCompletely("notification shutdown")
+                return START_NOT_STICKY
+            }
         }
         update()
         return START_NOT_STICKY
@@ -134,6 +138,10 @@ class VoiceService : Service() {
         }
         wake.stop()
         WakeActivationOverlay.dismiss(this)
+        if (foreground) {
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            foreground = false
+        }
         syncState(this)
         stopSelf()
     }
@@ -235,7 +243,7 @@ class VoiceService : Service() {
 
     private fun sessionNotification() = builder(CHANNEL)
         .setContentTitle("${Branding.ASSISTANT_NAME} is listening")
-        .setContentText("Talk any time. It stops after 3 quiet minutes.")
+        .setContentText("Talk any time. It stops after 50 quiet seconds.")
         .addAction(0, "Stop", action(ACTION_STOP, 1))
         .build()
 
@@ -280,6 +288,7 @@ class VoiceService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val ACTION_STOP = "app.shilex.android.STOP"
         private const val ACTION_WAKE_OFF = "app.shilex.android.WAKE_OFF"
+        private const val ACTION_SHUTDOWN = "app.shilex.android.SHUTDOWN"
         private const val MIC_HANDOVER_MS = 280L
         private val RESUME_WAKE_TOKEN = Any()
 
@@ -346,6 +355,25 @@ class VoiceService : Service() {
             } else {
                 syncState(context)
             }
+        }
+
+        /** Completely tears down wake listening, foreground service, notifications, and overlays. */
+        fun shutdownNow(context: Context) {
+            WakeIndicator.dismiss()
+            WakeActivationOverlay.dismiss(context)
+            app.shilex.android.wake.VoiceIndicator.off("shutdown")
+            val running = instance
+            if (running != null) {
+                running.main.removeCallbacksAndMessages(RESUME_WAKE_TOKEN)
+                running.wake.stop()
+                running.releaseWakeLock()
+                if (running.foreground) {
+                    ServiceCompat.stopForeground(running, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                    running.foreground = false
+                }
+                running.stopSelf()
+            }
+            syncState(context)
         }
     }
 }

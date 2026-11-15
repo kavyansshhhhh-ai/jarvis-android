@@ -32,4 +32,27 @@ class WhatsAppWorkflowTest {
         )
         assertNull(WhatsAppComposerMatcher.findSendButtonNumber(micOnly, micMeta))
     }
+
+    @Test
+    fun verifiesChatRecipientHeaderAndFindsCallButtons() {
+        val headerElements = listOf(
+            ScreenElement(1, "button", "Navigate up", ""),
+            ScreenElement(2, "text", "Rahul Sharma", ""),
+            ScreenElement(3, "button", "Voice call", ""),
+            ScreenElement(4, "button", "Video call", ""),
+            ScreenElement(5, "field", "Message", ""),
+        )
+        val meta = mapOf(
+            2 to ControlService.NodeMeta(2, "conversation_contact_name", "Rahul Sharma", "text", "com.whatsapp", Rect(50, 0, 200, 50)),
+            3 to ControlService.NodeMeta(3, "voice_call", "Voice call", "button", "com.whatsapp", Rect(250, 0, 300, 50)),
+            4 to ControlService.NodeMeta(4, "video_call", "Video call", "button", "com.whatsapp", Rect(310, 0, 360, 50)),
+        )
+
+        assertTrue(WhatsAppChatVerifier.matchesExpectedRecipient(headerElements, meta, "Rahul"))
+        assertTrue(WhatsAppChatVerifier.matchesExpectedRecipient(headerElements, meta, "rahul sharma"))
+        assertFalse(WhatsAppChatVerifier.matchesExpectedRecipient(headerElements, meta, "Priya"))
+
+        assertEquals(3, WhatsAppCallMatcher.findCallButtonNumber(headerElements, meta, WhatsAppCallMatcher.CallKind.Audio))
+        assertEquals(4, WhatsAppCallMatcher.findCallButtonNumber(headerElements, meta, WhatsAppCallMatcher.CallKind.Video))
+    }
 }

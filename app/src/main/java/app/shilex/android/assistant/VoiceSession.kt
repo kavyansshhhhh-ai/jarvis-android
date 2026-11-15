@@ -2,31 +2,39 @@ package app.shilex.android.assistant
 
 import android.app.Application
 import android.content.Context
+import android.content.IntentSender
 import android.net.Uri
 import android.os.SystemClock
 import app.shilex.android.Diag
 import app.shilex.android.audio.AudioPlaybackState
 import app.shilex.android.audio.MicRecorder
-import app.shilex.android.audio.TalkOver
-import app.shilex.android.audio.WaveStop
 import app.shilex.android.audio.MusicPause
-import app.shilex.android.control.ControlService
-import app.shilex.android.control.ScreenVision
 import app.shilex.android.audio.Speaker
+import app.shilex.android.audio.TalkOver
 import app.shilex.android.audio.VOICE_LEVEL
+import app.shilex.android.audio.WaveStop
 import app.shilex.android.audio.headphonesConnected
 import app.shilex.android.audio.pcmLevel
+import app.shilex.android.control.ControlService
+import app.shilex.android.control.ScreenVision
 import app.shilex.android.data.KeyCheckResult
 import app.shilex.android.data.KeyVault
 import app.shilex.android.data.PersonalProfileResolver
 import app.shilex.android.data.PersonalProfileStore
 import app.shilex.android.data.Settings
 import app.shilex.android.data.checkGeminiKey
+import app.shilex.android.learn.Habits
 import app.shilex.android.live.LiveClient
 import app.shilex.android.live.LiveEvent
-import app.shilex.android.learn.Habits
 import app.shilex.android.live.LiveProtocol
+import app.shilex.android.local.LocalTurn
+import app.shilex.android.orb.WakeActivationOverlay
+import app.shilex.android.task.ActiveTaskContext
+import app.shilex.android.task.CancellationStatus
 import app.shilex.android.task.TaskTracker
+import app.shilex.android.wake.VoiceIndicator
+import app.shilex.android.wake.WakeIndicator
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -53,6 +61,9 @@ data class UiState(
     /** Incremented when Android blocks screenshot capture and Photo Picker is offered instead. */
     val photoPickRequestId: Long = 0L,
     val photoPickQuestion: String = "",
+    /** Non-zero when Android's MediaStore delete confirmation dialog must be shown to the user. */
+    val galleryDeleteRequestId: Long = 0L,
+    val galleryDeleteIntentSender: IntentSender? = null,
 )
 
 /**
@@ -70,6 +81,8 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
     private val wave = WaveStop(app) { interrupt("a wave") }
     private val talkOver = TalkOver(speaker)
     private val transcript = Transcript()
+    @Volatile private var pendingGalleryDelete: CompletableDeferred<Boolean>? = null
+
     private val tools = ToolRunner(
         app,
         http,
@@ -87,6 +100,8 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
                 )
             }
         },
+        onGalleryDelete = { sender -> requestGalleryDeleteConfirmation(sender) },
+        onShutdown = { reason -> shutdownCompletely(reason) },
     )
     private val musicPause = MusicPause(app)
 
@@ -164,6 +179,7 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
         VoiceService.start(app)
         ControlService.instance?.overlay?.stopped = false
         lastActivity = SystemClock.elapsedRealtime()
+        VoiceIndicator.onProcessing()
         connect()
         watchdog = scope.launch {
             var musicChecks = 0
@@ -183,8 +199,9 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
                 } else if (musicChecks >= 2) {
                     stop("music playing")
                 } else if (SystemClock.elapsedRealtime() - lastActivity > IDLE_MS) {
-                    stop("idle for 3 minutes")
-                    _state.update { it.copy(problem = "Stopped listening after 3 quiet minutes.") }
+                    VoiceIndicator.onIdleTimeout("50 quiet seconds")
+                    stop("idle for 50 seconds")
+                    _state.update { it.copy(problem = "Stopped listening after 50 quiet seconds.") }
                 }
             }
         }
@@ -195,6 +212,8 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
         if (wanted) Diag.i("session: stop ($reason)")
         wanted = false
         wave.watch(false)
+        pendingGalleryDelete?.complete(false)
+        pendingGalleryDelete = null
         VoiceService.stop(app)
         musicPause.resume()
         tools.reset()
@@ -204,8 +223,51 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
         client.close()
         speaker.flush()
         transcript.endTurn()
-        _state.update { it.copy(phase = Phase.Off, photoPickRequestId = 0L) }
+        _state.update {
+            it.copy(
+                phase = Phase.Off,
+                photoPickRequestId = 0L,
+                galleryDeleteRequestId = 0L,
+                galleryDeleteIntentSender = null,
+            )
+        }
         _level.value = 0f
+        VoiceIndicator.off(reason)
+    }
+
+    /**
+     * Full explicit assistant shutdown: stops speaking, mic, background wake-word standby,
+     * foreground service, overlays, indicators, and clears transient task state.
+     */
+    fun shutdownCompletely(reason: String = "user requested shutdown") {
+        Diag.i("session: complete shutdown ($reason)")
+        ActiveTaskContext.cancel(CancellationStatus.Cancelled, reason)
+        settings.wakeWord = false
+        LocalTurn.get(app).stop(releaseModel = true)
+        stop(reason)
+        WakeIndicator.dismiss()
+        WakeActivationOverlay.dismiss(app)
+        VoiceIndicator.off(reason)
+        VoiceService.shutdownNow(app)
+    }
+
+    private suspend fun requestGalleryDeleteConfirmation(intentSender: IntentSender): Boolean {
+        pendingGalleryDelete?.complete(false)
+        val deferred = CompletableDeferred<Boolean>()
+        pendingGalleryDelete = deferred
+        _state.update {
+            it.copy(
+                galleryDeleteRequestId = System.currentTimeMillis(),
+                galleryDeleteIntentSender = intentSender,
+            )
+        }
+        return deferred.await()
+    }
+
+    fun onGalleryDeleteResult(confirmed: Boolean) {
+        _state.update { it.copy(galleryDeleteRequestId = 0L, galleryDeleteIntentSender = null) }
+        pendingGalleryDelete?.complete(confirmed)
+        pendingGalleryDelete = null
     }
 
     /** Handles a user-selected photo from Android's Photo Picker fallback cleanly via Gemini Vision. */
@@ -250,14 +312,20 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
         }
     }
 
-    /** Tap while it speaks: silence the rest of this reply. */
+    /** Tap or voice barge-in while speaking: silence this reply immediately and return to clean listening. */
     fun interrupt(how: String = "tap") {
-        if (_state.value.phase != Phase.Speaking) return
+        if (_state.value.phase != Phase.Speaking && !speaker.isAudible(tailMs = 0)) return
         Diag.i("reply: stopped by $how")
         wave.watch(false)
         droppingReply = true
         speaker.flush()
+        AudioPlaybackState.onLocalTtsEnded()
+        AudioPlaybackState.onLiveSpeakerState(active = false)
+        lastActivity = SystemClock.elapsedRealtime()
+        VoiceIndicator.onInterrupted(how)
+        _level.value = 0f
         _state.update { it.copy(phase = Phase.Listening) }
+        VoiceIndicator.onListening(0f)
     }
 
     /** The user answered a tool's permission request; tell the model so it can carry on. */
@@ -296,6 +364,7 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
                 java.time.ZonedDateTime.now(),
                 if (settings.learning) Habits.get(app).summary(java.time.LocalTime.now().hour) else "",
                 profileSummary,
+                activeContext = ActiveTaskContext.promptSummary(),
             ),
             voice = settings.voice,
             languages = settings.speechLanguages,
@@ -316,6 +385,7 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
                     return
                 }
                 _state.update { it.copy(phase = Phase.Listening) }
+                VoiceIndicator.onListening(0f)
                 pendingText?.let {
                     pendingText = null
                     client.send(LiveProtocol.userTextMessage(it))
@@ -329,8 +399,10 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
                     Diag.i("reply: first audio $wait")
                 }
                 speaker.play(event.pcm, event.sampleRate)
-                _level.value = loudness(pcmLevel(event.pcm))
+                val amp = loudness(pcmLevel(event.pcm))
+                _level.value = amp
                 _state.update { it.copy(phase = Phase.Speaking) }
+                VoiceIndicator.onSpeaking(amp)
                 wave.watch(settings.waveToStop)
             }
             is LiveEvent.UserText -> {
@@ -360,6 +432,10 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
                 lastUserTurnText.clear()
                 speaker.flush()
                 transcript.endTurn()
+                lastActivity = SystemClock.elapsedRealtime()
+                VoiceIndicator.onInterrupted("server barge-in")
+                _state.update { it.copy(phase = Phase.Listening) }
+                VoiceIndicator.onListening(0f)
             }
             LiveEvent.TurnComplete -> {
                 speaker.endReply()
@@ -376,12 +452,24 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
                 if (!receivedAudio && textToSpeak.isNotBlank() && settings.speakResponses) {
                     Diag.i("reply: falling back to local TTS for assistant text: ${textToSpeak.take(40)}...")
                     _state.update { it.copy(phase = Phase.Speaking) }
-                    speaker.speak(textToSpeak) {
+                    VoiceIndicator.onSpeaking(0.45f)
+                    wave.watch(settings.waveToStop)
+                    speaker.speak(
+                        text = textToSpeak,
+                        onInterrupted = {
+                            wave.watch(false)
+                            if (wanted && _state.value.phase == Phase.Speaking) {
+                                _state.update { it.copy(phase = Phase.Listening) }
+                                VoiceIndicator.onListening(0f)
+                            }
+                        },
+                    ) {
                         scope.launch {
                             while (speaker.isAudible(tailMs = 0)) delay(100)
                             wave.watch(false)
                             if (wanted && _state.value.phase == Phase.Speaking) {
                                 _state.update { it.copy(phase = Phase.Listening) }
+                                VoiceIndicator.onListening(0f)
                             }
                             if (wanted) tools.openPending()
                         }
@@ -392,6 +480,7 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
                         wave.watch(false)
                         if (wanted && _state.value.phase == Phase.Speaking) {
                             _state.update { it.copy(phase = Phase.Listening) }
+                            VoiceIndicator.onListening(0f)
                         }
                         if (wanted) tools.openPending()
                     }
@@ -399,6 +488,7 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
             }
             is LiveEvent.ToolCall -> {
                 lastActivity = SystemClock.elapsedRealtime()
+                VoiceIndicator.onProcessing()
                 tools.handle(event.calls)
             }
             is LiveEvent.ToolCancelled -> tools.cancel(event.ids)
@@ -443,9 +533,16 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
             return
         }
         val level = pcmLevel(pcm)
-        _level.value = loudness(level)
+        val amp = loudness(level)
+        _level.value = amp
         if (level > loudest) loudest = level
-        if (!replyStarted && level >= VOICE_LEVEL) voiceAt = SystemClock.elapsedRealtime()
+        if (level >= VOICE_LEVEL) {
+            lastActivity = SystemClock.elapsedRealtime()
+            if (!replyStarted) voiceAt = lastActivity
+        }
+        if (_state.value.phase == Phase.Listening) {
+            VoiceIndicator.updateAmplitude(amp)
+        }
         client.sendAudio(pcm)
     }
 
@@ -472,7 +569,7 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
 
     companion object {
         private const val MAX_RETRIES = 3
-        private const val IDLE_MS = 3 * 60_000L
+        const val IDLE_MS = 50_000L
         private const val LOUD_LEVEL = 3_000f // a clear voice near the phone
         private const val WATCH_MS = 3_000L
 

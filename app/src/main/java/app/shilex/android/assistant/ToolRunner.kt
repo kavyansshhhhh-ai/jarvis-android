@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
@@ -41,6 +42,7 @@ import app.shilex.android.tools.ReminderTools
 import app.shilex.android.tools.Results
 import app.shilex.android.tools.ScreenTools
 import app.shilex.android.tools.ToolHost
+import app.shilex.android.task.ActiveTaskContext
 import app.shilex.android.task.Capabilities
 import app.shilex.android.task.DuplicateGuard
 import app.shilex.android.task.Finish
@@ -74,6 +76,8 @@ class ToolRunner(
     private val note: (String) -> Unit,
     private val endSoon: () -> Unit,
     private val onPhotoPick: (String) -> Unit = {},
+    private val onGalleryDelete: suspend (IntentSender) -> Boolean = { false },
+    private val onShutdown: (String) -> Unit = {},
 ) : ToolHost {
     private val tools = (
         CommsTools.all() + ClockTools.all() + ReminderTools.all() + MediaTools.all() + InfoTools.all() +
@@ -165,6 +169,7 @@ class ToolRunner(
     /** The user spoke or typed: their words lead again ([TurnTrust]) and may answer a reply read-back. */
     fun userSpoke(text: String = "") {
         if (text.isNotBlank()) lastUserText = text
+        ActiveTaskContext.clearIfStale()
         trust.userSpoke()
         Replies.heard(text)
     }
@@ -228,6 +233,15 @@ class ToolRunner(
     override fun requestPhotoPick(question: String) {
         onPhotoPick(question)
         if (!onScreen()) start(Intent(context, MainActivity::class.java))
+    }
+
+    override suspend fun requestGalleryDelete(intentSender: IntentSender): Boolean {
+        if (!onScreen()) start(Intent(context, MainActivity::class.java))
+        return onGalleryDelete(intentSender)
+    }
+
+    override fun shutdownAssistant(reason: String) {
+        onShutdown(reason)
     }
 
     override fun openApp(intent: Intent, label: String, done: String, then: (suspend () -> String?)?): JSONObject {

@@ -2,6 +2,7 @@ package app.shilex.android.tools
 
 import android.content.Context
 import android.content.Intent
+import android.content.IntentSender
 import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
@@ -47,6 +48,12 @@ interface ToolHost {
 
     /** Opens Android's system Photo Picker when screen capture is blocked (FLAG_SECURE or user preference). */
     fun requestPhotoPick(question: String = "") = Unit
+
+    /** Launches Android's system confirmation IntentSender (e.g. MediaStore.createDeleteRequest) and awaits the result. */
+    suspend fun requestGalleryDelete(intentSender: IntentSender): Boolean = false
+
+    /** Completely shuts down active voice sessions, wake word listener, foreground service, and overlays. */
+    fun shutdownAssistant(reason: String = "user requested shutdown") = Unit
 }
 
 /** Tool results the model reads. `status` is always one of these words. */

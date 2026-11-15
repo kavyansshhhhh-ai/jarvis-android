@@ -1,7 +1,9 @@
 package app.shilex.android.ui
 
+import android.app.Activity
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
@@ -120,6 +122,7 @@ fun ShilexApp(assistant: AssistantViewModel) {
     val wakeDotSize by assistant.wakeDotSizeState.collectAsStateWithLifecycle()
     val level by assistant.level.collectAsStateWithLifecycle()
     val task by assistant.task.collectAsStateWithLifecycle()
+    val voiceIndicator by assistant.voiceIndicator.collectAsStateWithLifecycle()
     var onboarded by rememberSaveable { mutableStateOf(assistant.onboarded) }
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var modalOverlayActive by remember { mutableStateOf(false) }
@@ -130,9 +133,23 @@ fun ShilexApp(assistant: AssistantViewModel) {
         assistant.onPhotoPicked(uri)
     }
 
+    val galleryDeleteLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult(),
+    ) { result ->
+        assistant.onGalleryDeleteResult(result.resultCode == Activity.RESULT_OK)
+    }
+
     LaunchedEffect(state.photoPickRequestId) {
         if (state.photoPickRequestId > 0L) {
             photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        }
+    }
+
+    LaunchedEffect(state.galleryDeleteRequestId, state.galleryDeleteIntentSender) {
+        val sender = state.galleryDeleteIntentSender
+        if (state.galleryDeleteRequestId > 0L && sender != null) {
+            val request = IntentSenderRequest.Builder(sender).build()
+            galleryDeleteLauncher.launch(request)
         }
     }
 
@@ -168,6 +185,7 @@ fun ShilexApp(assistant: AssistantViewModel) {
                         task = task,
                         activity = activity,
                         wakeWord = wakeWord,
+                        voiceIndicator = voiceIndicator,
                         onboarded = onboarded,
                         onOnboarded = { onboarded = true },
                         tab = tab,
@@ -178,6 +196,17 @@ fun ShilexApp(assistant: AssistantViewModel) {
                             triggerId = wakeDot.triggerId,
                             durationMs = wakeDot.durationMs,
                             dotSize = wakeDotSize,
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .statusBarsPadding()
+                                .padding(top = 6.dp),
+                        )
+                    } else if (voiceIndicator.visible &&
+                        voiceIndicator.state != app.shilex.android.wake.VoiceIndicatorState.OFF &&
+                        voiceIndicator.state != app.shilex.android.wake.VoiceIndicatorState.IDLE_TIMEOUT
+                    ) {
+                        AnimatedVoiceIndicatorDot(
+                            snapshot = voiceIndicator,
                             modifier = Modifier
                                 .align(Alignment.TopCenter)
                                 .statusBarsPadding()
@@ -199,6 +228,7 @@ private fun Content(
     task: Task?,
     activity: List<ActivityLog.Entry>,
     wakeWord: Boolean,
+    voiceIndicator: app.shilex.android.wake.VoiceIndicatorSnapshot,
     onboarded: Boolean,
     onOnboarded: () -> Unit,
     tab: Int,
@@ -260,6 +290,7 @@ private fun Content(
                     onQuick = assistant::quick,
                     onSeeActivity = { setTab(Tab.Activity.ordinal) },
                     favourites = remember(activity.size) { assistant.favourites() },
+                    voiceIndicator = voiceIndicator,
                 )
                 Tab.Automations -> AutomationsScreen()
                 Tab.Activity -> ActivityScreen(activity, assistant::clearActivity)

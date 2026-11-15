@@ -312,4 +312,53 @@ class WakeIndicatorTest {
             ),
         )
     }
+
+    @Test
+    fun voiceIndicatorStateMachineTransitionsAndClamping() {
+        val sm = VoiceIndicatorStateMachine()
+        assertEquals(VoiceIndicatorState.OFF, sm.state.value.state)
+        assertFalse(sm.state.value.visible)
+
+        // Transitions to Listening
+        sm.onListening(amplitude = 0.3f, nowMs = 1000L)
+        assertEquals(VoiceIndicatorState.LISTENING, sm.state.value.state)
+        assertTrue(sm.state.value.visible)
+        assertTrue(sm.state.value.compactListening)
+        assertEquals(0.3f, sm.state.value.amplitude, 0.01f)
+
+        // Processing
+        sm.onProcessing(nowMs = 1500L)
+        assertEquals(VoiceIndicatorState.PROCESSING, sm.state.value.state)
+        assertTrue(sm.state.value.visible)
+        assertEquals(0f, sm.state.value.amplitude, 0.01f)
+
+        // Speaking with amplitude
+        sm.onSpeaking(amplitude = 0.5f, nowMs = 2000L)
+        assertEquals(VoiceIndicatorState.SPEAKING, sm.state.value.state)
+        assertTrue(sm.state.value.visible)
+        assertTrue(sm.state.value.animatingSpeech)
+        assertEquals(0.5f, sm.state.value.amplitude, 0.01f)
+
+        // Dynamic amplitude update during speech (clamped 0..1)
+        sm.updateAmplitude(1.5f)
+        assertEquals(1.0f, sm.state.value.amplitude, 0.01f)
+        sm.updateAmplitude(-0.2f)
+        assertEquals(0.0f, sm.state.value.amplitude, 0.01f)
+
+        // Interrupted
+        sm.onInterrupted(nowMs = 2500L, reason = "user barge-in")
+        assertEquals(VoiceIndicatorState.INTERRUPTED, sm.state.value.state)
+        assertEquals(0f, sm.state.value.amplitude, 0.01f)
+
+        // Idle timeout hides indicator completely
+        sm.onIdleTimeout(nowMs = 52_500L, reason = "50s quiet")
+        assertEquals(VoiceIndicatorState.IDLE_TIMEOUT, sm.state.value.state)
+        assertFalse(sm.state.value.visible)
+
+        // Off
+        sm.off(nowMs = 53_000L)
+        assertEquals(VoiceIndicatorState.OFF, sm.state.value.state)
+        assertFalse(sm.state.value.visible)
+    }
 }
+
