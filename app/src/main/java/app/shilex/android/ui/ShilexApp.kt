@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
@@ -26,7 +27,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -43,7 +43,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -58,27 +57,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.layer.GraphicsLayer
-import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalGraphicsContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -87,7 +76,6 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -103,7 +91,6 @@ import app.shilex.android.wake.WakeIndicatorController
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
 
 private enum class Tab(val label: String, val icon: ImageVector) {
     Home("Home", Icons.Filled.Home),
@@ -245,9 +232,6 @@ private fun Content(
     }
 
     val context = LocalContext.current
-    val supportsBackdropBlur = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-    val contentLayer = if (supportsBackdropBlur) rememberBackdropLayer() else null
-    var contentOffset by remember { mutableStateOf(Offset.Zero) }
 
     Box(
         Modifier
@@ -256,25 +240,14 @@ private fun Content(
     ) {
         val safeTab = tab.coerceIn(0, Tab.entries.lastIndex)
 
-        // Full-bleed scrollable content layer (instant zero-delay swap when tab changes)
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .onGloballyPositioned { contentOffset = it.positionInRoot() }
-                .then(
-                    if (contentLayer != null) {
-                        Modifier.drawWithContent {
-                            contentLayer.record {
-                                this@drawWithContent.drawContent()
-                            }
-                            drawLayer(contentLayer)
-                        }
-                    } else {
-                        Modifier
-                    },
-                ),
-        ) {
-            when (Tab.entries[safeTab]) {
+        // Full-bleed scrollable content with short GPU-composited crossfade to prevent tab-switch flicker
+        Crossfade(
+            targetState = safeTab,
+            animationSpec = tween(durationMillis = 100),
+            modifier = Modifier.fillMaxSize(),
+            label = "tabCrossfade",
+        ) { activeTabIndex ->
+            when (Tab.entries[activeTabIndex]) {
                 Tab.Home -> HomeScreen(
                     state = state,
                     localPhase = localPhase,
@@ -305,8 +278,6 @@ private fun Content(
                 val clamped = next.coerceIn(0, Tab.entries.lastIndex)
                 if (clamped != safeTab) setTab(clamped)
             },
-            backdropLayer = contentLayer,
-            contentOffset = contentOffset,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
@@ -319,13 +290,10 @@ private fun Content(
 private fun FloatingLiquidGlassDock(
     selectedTab: Int,
     onSelectTab: (Int) -> Unit,
-    backdropLayer: GraphicsLayer?,
-    contentOffset: Offset,
     modifier: Modifier = Modifier,
 ) {
     val dockShape = remember { RoundedCornerShape(34.dp) }
     val lensShape = remember { RoundedCornerShape(28.dp) }
-    var dockOffset by remember { mutableStateOf(Offset.Zero) }
     val haptic = LocalHapticFeedback.current
     val coroutineScope = rememberCoroutineScope()
 
@@ -391,10 +359,6 @@ private fun FloatingLiquidGlassDock(
         modifier = modifier
             .fillMaxWidth()
             .height(FloatingDockHeight)
-            .onGloballyPositioned { coords ->
-                val pos = coords.positionInRoot()
-                if (pos != dockOffset) dockOffset = pos
-            }
             .shadow(
                 elevation = 20.dp,
                 shape = dockShape,
@@ -403,24 +367,6 @@ private fun FloatingLiquidGlassDock(
             )
             .clip(dockShape),
     ) {
-        // Real GPU backdrop blur on Android 12+ sampling live scrolling content underneath
-        if (backdropLayer != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .blur(24.dp)
-                    .drawBehind {
-                        if (backdropLayer.size.width > 0 && backdropLayer.size.height > 0) {
-                            translate(
-                                left = contentOffset.x - dockOffset.x,
-                                top = contentOffset.y - dockOffset.y,
-                            ) {
-                                drawLayer(backdropLayer)
-                            }
-                        }
-                    },
-            )
-        }
 
         // Smoked obsidian glass tint + top specular rim
         Box(
@@ -662,19 +608,17 @@ private fun FloatingLiquidGlassDock(
                     }
                 },
         ) {
-            // Luminous frosted Liquid Glass capsule lens behind hovered/active tab
+            // Luminous frosted Liquid Glass capsule lens behind hovered/active tab (GPU-composited translation)
             if (dockWidthPx > 0) {
                 val activeLens = isPressed || isDragging
                 Box(
                     modifier = Modifier
-                        .offset {
-                            val xPx = if (isDragging || isSettlingFromDrag) dragOffsetState.floatValue else lensX.value
-                            IntOffset((xPx + innerInsetPx + padPx).roundToInt(), 0)
-                        }
                         .align(Alignment.CenterStart)
                         .width((slotWidthDp - 4.dp).coerceAtLeast(1.dp))
                         .height(54.dp)
                         .graphicsLayer {
+                            val xPx = if (isDragging || isSettlingFromDrag) dragOffsetState.floatValue else lensX.value
+                            translationX = xPx + innerInsetPx + padPx
                             scaleX = lensScale
                             scaleY = lensScale
                         }
@@ -711,7 +655,10 @@ private fun FloatingLiquidGlassDock(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight()
-                            .scale(contentScale)
+                            .graphicsLayer {
+                                scaleX = contentScale
+                                scaleY = contentScale
+                            }
                             .semantics(mergeDescendants = true) {
                                 role = Role.Tab
                                 this.selected = (selectedTab == item.ordinal)
@@ -746,14 +693,4 @@ private fun FloatingLiquidGlassDock(
             }
         }
     }
-}
-
-@Composable
-private fun rememberBackdropLayer(): GraphicsLayer {
-    val graphicsContext = LocalGraphicsContext.current
-    val layer = remember(graphicsContext) { graphicsContext.createGraphicsLayer() }
-    DisposableEffect(graphicsContext, layer) {
-        onDispose { graphicsContext.releaseGraphicsLayer(layer) }
-    }
-    return layer
 }

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,10 +28,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -71,6 +72,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.shilex.android.Branding
 import app.shilex.android.assistant.AssistantViewModel
+import app.shilex.android.audio.VoiceClassifier
 import app.shilex.android.data.Settings as AppSettings
 import app.shilex.android.memory.MemoryStore
 import app.shilex.android.orb.FloatingOrb
@@ -133,76 +135,83 @@ private fun PermissionsSubScreen(
     assistant: AssistantViewModel,
     onBack: () -> Unit,
 ) {
-    Column(
-        Modifier
+    val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val bottomPadding = floatingDockContentBottomPadding()
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier
             .fillMaxSize()
             .background(OledBlack)
-            .verticalScroll(rememberScrollState())
-            .statusBarsPadding()
-            .padding(horizontal = 20.dp),
+            .statusBarsPadding(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = bottomPadding),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            val interaction = remember { MutableInteractionSource() }
-            Row(
-                modifier = Modifier
-                    .glassPressScale(interaction)
-                    .clip(RoundedCornerShape(50))
-                    .background(Color(0x1CFFFFFF))
-                    .border(0.8.dp, GlassBorderSubtle, RoundedCornerShape(50))
-                    .clickable(interactionSource = interaction, indication = null, onClick = onBack)
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back to Settings",
-                    tint = PureWhite,
-                    modifier = Modifier.size(18.dp),
+        item(key = "perm_header") {
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp, bottom = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val interaction = remember { MutableInteractionSource() }
+                    Row(
+                        modifier = Modifier
+                            .glassPressScale(interaction)
+                            .clip(RoundedCornerShape(50))
+                            .background(Color(0x1CFFFFFF))
+                            .border(0.8.dp, GlassBorderSubtle, RoundedCornerShape(50))
+                            .clickable(interactionSource = interaction, indication = null, onClick = onBack)
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back to Settings",
+                            tint = PureWhite,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text("Settings", style = MaterialTheme.typography.labelLarge, color = PureWhite)
+                    }
+                }
+
+                Text(
+                    "Permissions",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = PureWhite,
+                    fontWeight = FontWeight.Bold,
                 )
-                Text("Settings", style = MaterialTheme.typography.labelLarge, color = PureWhite)
+                Text(
+                    "Manage every Android runtime permission, system setting, and automation category in one place.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Muted,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
             }
         }
 
-        Column {
-            Text(
-                "Permissions",
-                style = MaterialTheme.typography.headlineSmall,
-                color = PureWhite,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                "Manage every Android runtime permission, system setting, and automation category in one place.",
-                style = MaterialTheme.typography.bodySmall,
-                color = Muted,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
-
-        Section("Automation Permissions") {
-            app.shilex.android.data.AutomationCategory.entries.forEachIndexed { idx, cat ->
-                if (idx > 0) GlassDivider()
-                var enabled by remember { mutableStateOf(assistant.isAutomationEnabled(cat)) }
-                SwitchRow(
-                    title = cat.title,
-                    detail = cat.summary,
-                    checked = enabled,
-                ) { checked ->
-                    enabled = checked
-                    assistant.setAutomationEnabled(cat, checked)
+        item(key = "perm_automation") {
+            Section("Automation Permissions") {
+                app.shilex.android.data.AutomationCategory.entries.forEachIndexed { idx, cat ->
+                    if (idx > 0) GlassDivider()
+                    var enabled by remember { mutableStateOf(assistant.isAutomationEnabled(cat)) }
+                    SwitchRow(
+                        title = cat.title,
+                        detail = cat.summary,
+                        checked = enabled,
+                    ) { checked ->
+                        enabled = checked
+                        assistant.setAutomationEnabled(cat, checked)
+                    }
                 }
             }
         }
 
-        PermissionCenterPanel(compact = false, showBatchAllowBar = true)
-
-        FloatingDockBottomSpacer()
+        item(key = "perm_system") {
+            PermissionCenterPanel(compact = false, showBatchAllowBar = true)
+        }
     }
 }
 
@@ -266,32 +275,38 @@ private fun SettingsMainContent(
         Unit
     }
 
-    Column(
-        Modifier
+    val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val bottomPadding = floatingDockContentBottomPadding()
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier
             .fillMaxSize()
             .background(OledBlack)
-            .verticalScroll(rememberScrollState())
-            .statusBarsPadding()
-            .padding(horizontal = 20.dp),
+            .statusBarsPadding(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = bottomPadding),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        Column(Modifier.padding(top = 14.dp)) {
-            Text(
-                "Settings",
-                style = MaterialTheme.typography.headlineSmall,
-                color = PureWhite,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                "Customize intelligence, audio response, and privacy boundaries.",
-                style = MaterialTheme.typography.bodySmall,
-                color = Muted,
-                modifier = Modifier.padding(top = 4.dp),
-            )
+        item(key = "header") {
+            Column(Modifier.padding(top = 14.dp)) {
+                Text(
+                    "Settings",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = PureWhite,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    "Customize intelligence, audio response, and privacy boundaries.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Muted,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
         }
 
         // Top Assistant Identity Hero Card
-        GlassCard(shape = RoundedCornerShape(26.dp), verticalPadding = 14) {
+        item(key = "hero") {
+            GlassCard(shape = RoundedCornerShape(26.dp), verticalPadding = 14) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -339,77 +354,83 @@ private fun SettingsMainContent(
                     color = if (wakeOn && micGranted) ElectricCyan else SlateMuted,
                 )
             }
+            }
         }
 
         // Single Dedicated Permissions Folder (opens full Permissions screen)
-        Section("Permissions") {
-            val interaction = remember { MutableInteractionSource() }
-            val pendingCount = (permissionSnapshot.actionableTotalCount - permissionSnapshot.grantedCount).coerceAtLeast(0)
-            val allEssentialOk = permissionSnapshot.essentialPending.isEmpty()
-            val statusBadgeColor = when {
-                pendingCount == 0 -> ElectricCyan
-                !allEssentialOk -> CoralError
-                else -> AmberWarning
-            }
-            val statusBadgeLabel = when {
-                pendingCount == 0 -> "All granted"
-                else -> "$pendingCount need setup"
-            }
+        item(key = "permissions") {
+            Section("Permissions") {
+                val interaction = remember { MutableInteractionSource() }
+                val pendingCount = (permissionSnapshot.actionableTotalCount - permissionSnapshot.grantedCount).coerceAtLeast(0)
+                val allEssentialOk = permissionSnapshot.essentialPending.isEmpty()
+                val statusBadgeColor = when {
+                    pendingCount == 0 -> ElectricCyan
+                    !allEssentialOk -> CoralError
+                    else -> AmberWarning
+                }
+                val statusBadgeLabel = when {
+                    pendingCount == 0 -> "All granted"
+                    else -> "$pendingCount need setup"
+                }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .glassPressScale(interaction)
-                    .clickable(interactionSource = interaction, indication = null, onClick = onOpenPermissions)
-                    .padding(vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                GlassRowIcon(
-                    icon = Icons.Filled.Lock,
-                    tint = ElectricCyan,
-                    accentGlow = allEssentialOk,
-                )
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Permissions",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = PureWhite,
-                        fontWeight = FontWeight.SemiBold,
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassPressScale(interaction)
+                        .clickable(interactionSource = interaction, indication = null, onClick = onOpenPermissions)
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    GlassRowIcon(
+                        icon = Icons.Filled.Lock,
+                        tint = ElectricCyan,
+                        accentGlow = allEssentialOk,
                     )
-                    Text(
-                        "${permissionSnapshot.grantedCount} of ${permissionSnapshot.actionableTotalCount} granted • Microphone, Notifications, Accessibility, Overlay, Battery & more",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Muted,
-                        modifier = Modifier.padding(top = 2.dp),
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Permissions",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = PureWhite,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "${permissionSnapshot.grantedCount} of ${permissionSnapshot.actionableTotalCount} granted • Microphone, Notifications, Accessibility, Overlay, Battery & more",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Muted,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Pill(statusBadgeLabel, statusBadgeColor, dot = pendingCount == 0)
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = "Open Permissions",
+                        tint = Muted,
+                        modifier = Modifier.size(20.dp),
                     )
                 }
-                Spacer(Modifier.width(10.dp))
-                Pill(statusBadgeLabel, statusBadgeColor, dot = pendingCount == 0)
-                Spacer(Modifier.width(6.dp))
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = "Open Permissions",
-                    tint = Muted,
-                    modifier = Modifier.size(20.dp),
-                )
             }
         }
 
         // Dedicated JARVIS VOICE Folder (opens clean Female Voices / Male Voices folder)
-        val hindiCatalog by assistant.speaker.hindiCatalog.collectAsStateWithLifecycle()
-        val selectedVoiceId = assistant.ttsVoiceId
-        val activeVoiceName = remember(selectedVoiceId, hindiCatalog) {
-            if (selectedVoiceId == null) {
-                "Default Hindi voice"
-            } else {
+        item(key = "jarvis_voice") {
+            val hindiCatalog by assistant.speaker.hindiCatalog.collectAsStateWithLifecycle()
+            val effectiveVoiceId = remember(assistant.ttsVoiceId, hindiCatalog, assistant.ttsGenderFilter) {
+                VoiceClassifier.resolveEffectiveVoiceId(
+                    savedVoiceId = assistant.ttsVoiceId,
+                    catalog = hindiCatalog,
+                    preferMale = assistant.ttsGenderFilter == AppSettings.GENDER_MALE,
+                )
+            }
+            val activeVoiceName = remember(effectiveVoiceId, hindiCatalog) {
                 (hindiCatalog.femaleVoices + hindiCatalog.maleVoices)
-                    .firstOrNull { it.id == selectedVoiceId }
+                    .firstOrNull { it.id == effectiveVoiceId }
                     ?.displayName
                     ?: "Default Hindi voice"
             }
-        }
-        Section("JARVIS VOICE") {
+            Section("JARVIS VOICE") {
             val interaction = remember { MutableInteractionSource() }
             Row(
                 modifier = Modifier
@@ -449,9 +470,11 @@ private fun SettingsMainContent(
                     modifier = Modifier.size(20.dp),
                 )
             }
+            }
         }
 
-        Section("Personal Profile") {
+        item(key = "profile") {
+            Section("Personal Profile") {
             val songSummary = if (profile.favoriteSongs.isEmpty()) "No favourite songs saved" else profile.favoriteSongs.joinToString(", ")
             val musicAppText = profile.preferredMusicApp.ifBlank { "Default (YouTube Music / Spotify)" }
             val identityLine = listOfNotNull(
@@ -468,9 +491,11 @@ private fun SettingsMainContent(
                     Text(if (profile.isEmpty) "Set up" else "Edit", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
                 }
             }
+            }
         }
 
-        Section("Gemini Intelligence") {
+        item(key = "gemini") {
+            Section("Gemini Intelligence") {
             InfoRow(
                 "API key",
                 "Your own key, encrypted with Android Keystore on this phone. Used only for requests the phone can't handle.",
@@ -492,9 +517,11 @@ private fun SettingsMainContent(
                     Text("Open", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
                 }
             }
+            }
         }
 
-        Section("Conversation & Feedback") {
+        item(key = "feedback") {
+            Section("Conversation & Feedback") {
             var talkOn by remember { mutableStateOf(assistant.talkOver) }
             SwitchRow(
                 "Talk over ${Branding.ASSISTANT_NAME}",
@@ -516,9 +543,11 @@ private fun SettingsMainContent(
                 waveOn = it
                 assistant.waveToStop = it
             }
+            }
         }
 
-        Section("Floating Presence") {
+        item(key = "floating_presence") {
+            Section("Floating Presence") {
             val prefs = remember { AppSettings(context) }
             var orbOn by remember { mutableStateOf(prefs.floatingOrb && overlayAllowed) }
             LaunchedEffect(overlayAllowed) {
@@ -544,9 +573,11 @@ private fun SettingsMainContent(
                     FloatingOrb.sync(context)
                 }
             }
+            }
         }
 
-        Section("Wake Word") {
+        item(key = "wake_word") {
+            Section("Wake Word") {
             SwitchRow(
                 "Enable wake word",
                 if (micGranted) {
@@ -620,9 +651,11 @@ private fun SettingsMainContent(
                     onForget = assistant::forgetVoice,
                 )
             }
+            }
         }
 
-        Section("Local Commands") {
+        item(key = "local_commands") {
+            Section("Local Commands") {
             SwitchRow(
                 "Handle simple commands on phone",
                 "Volume, music, flashlight, apps, time, timers and alarms run here, without Gemini.",
@@ -645,9 +678,11 @@ private fun SettingsMainContent(
             }
             GlassDivider()
             InfoRow("Speech heard by", engineText(engine))
+            }
         }
 
-        Section("Adaptive Learning") {
+        item(key = "adaptive_learning") {
+            Section("Adaptive Learning") {
             var learnOn by remember { mutableStateOf(assistant.learning) }
             var learned by remember { mutableStateOf(assistant.learnedSummary()) }
             SwitchRow(
@@ -666,9 +701,11 @@ private fun SettingsMainContent(
                     learned = assistant.learnedSummary()
                 }) { Text("Forget", color = CoralError) }
             }
+            }
         }
 
-        Section("Installed Apps Discovery") {
+        item(key = "installed_apps") {
+            Section("Installed Apps Discovery") {
             val launchCount = installedApps.count { it.launchable }
             InfoRow(
                 "All installed apps (A–Z)",
@@ -685,9 +722,11 @@ private fun SettingsMainContent(
                     Text("Browse A–Z", color = ElectricCyan, fontWeight = FontWeight.SemiBold)
                 }
             }
+            }
         }
 
-        Section("Privacy Boundaries") {
+        item(key = "privacy") {
+            Section("Privacy Boundaries") {
             InfoRow(
                 "What leaves the phone",
                 "The wake word and local commands stay on this phone. Gemini receives only requests the phone cannot resolve locally. Diagnostic logs never store audio.",
@@ -713,17 +752,19 @@ private fun SettingsMainContent(
                     }
                 }
             }
+            }
         }
 
-        Section("About") {
-            InfoRow(
-                Branding.ASSISTANT_NAME,
-                "Version ${versionName(context)} • GNU GPL v3.0",
-                icon = Icons.Filled.Info,
-                iconTint = Muted,
-            )
+        item(key = "about") {
+            Section("About") {
+                InfoRow(
+                    Branding.ASSISTANT_NAME,
+                    "Version ${versionName(context)} • GNU GPL v3.0",
+                    icon = Icons.Filled.Info,
+                    iconTint = Muted,
+                )
+            }
         }
-        FloatingDockBottomSpacer()
     }
 }
 

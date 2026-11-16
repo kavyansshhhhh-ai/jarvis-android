@@ -26,12 +26,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
@@ -43,12 +42,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
@@ -215,41 +214,60 @@ fun HomeScreen(
             recentTask?.let { TaskCard(it, Modifier.padding(bottom = 12.dp)) }
             ChatConversation(state.lines, Modifier.fillMaxWidth().weight(1f))
         } else {
-            // Standby / Quick action mode with smooth scrolling above floating capsule nav bar
-            Column(
+            // Standby / Quick action mode with virtualized smooth scrolling above action button & dock
+            val standbyListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+            LazyColumn(
+                state = standbyListState,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState()),
+                    .weight(1f),
+                contentPadding = PaddingValues(bottom = 16.dp),
             ) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 18.dp, bottom = 14.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Orb(
-                        phase = now.orb,
-                        level = level,
-                        modifier = Modifier
-                            .size(226.dp)
-                            .semantics { contentDescription = "${Branding.ASSISTANT_NAME}: ${now.title}" }
-                            .clickable(remember { MutableInteractionSource() }, indication = null) {
-                                when {
-                                    state.phase == Phase.Speaking || localPhase == LocalPhase.Speaking -> onInterrupt()
-                                    state.phase == Phase.Off && localPhase == LocalPhase.Idle -> startListening()
-                                    else -> Unit
-                                }
-                            },
-                    )
+                item(key = "home_orb") {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 18.dp, bottom = 14.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        val orbInteraction = remember { MutableInteractionSource() }
+                        Orb(
+                            phase = now.orb,
+                            level = level,
+                            modifier = Modifier
+                                .size(226.dp)
+                                .semantics { contentDescription = "${Branding.ASSISTANT_NAME}: ${now.title}" }
+                                .clickable(orbInteraction, indication = null) {
+                                    when {
+                                        state.phase == Phase.Speaking || localPhase == LocalPhase.Speaking -> onInterrupt()
+                                        state.phase == Phase.Off && localPhase == LocalPhase.Idle -> startListening()
+                                        else -> Unit
+                                    }
+                                },
+                        )
+                    }
                 }
 
-                StatusHeader(now, problem)
-                recentTask?.let { TaskCard(it, Modifier.padding(bottom = 12.dp)) }
-                QuickActions(onQuick, favourites)
-                Spacer(Modifier.height(16.dp))
-                RecentActivitySnippet(activity.take(2), onSeeActivity)
-                Spacer(Modifier.height(16.dp))
+                item(key = "home_status") {
+                    StatusHeader(now, problem)
+                }
+
+                if (recentTask != null) {
+                    item(key = "home_task") {
+                        TaskCard(recentTask, Modifier.padding(bottom = 12.dp))
+                    }
+                }
+
+                item(key = "home_quick") {
+                    QuickActions(onQuick, favourites)
+                }
+
+                item(key = "home_recent") {
+                    Column {
+                        Spacer(Modifier.height(16.dp))
+                        RecentActivitySnippet(activity.take(2), onSeeActivity)
+                    }
+                }
             }
         }
 
@@ -276,33 +294,8 @@ fun HomeScreen(
                         spotColor = if (live) CoralError else ElectricCyan,
                     )
                     .clip(buttonShape)
-                    .background(
-                        if (live) {
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color(0xFFE54D4D),
-                                    Color(0xFF9E1F1F),
-                                ),
-                            )
-                        } else {
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color(0xFF45EEFF),
-                                    Color(0xFF0C94A8),
-                                ),
-                            )
-                        },
-                    )
-                    .border(
-                        1.2.dp,
-                        Brush.verticalGradient(
-                            listOf(
-                                Color(0xAAFFFFFF),
-                                Color(0x33FFFFFF),
-                            ),
-                        ),
-                        buttonShape,
-                    )
+                    .background(if (live) LiveStopButtonGradient else TalkButtonGradient)
+                    .border(1.2.dp, ButtonRimGradient, buttonShape)
                     .clickable(
                         interactionSource = micInteraction,
                         indication = null,
@@ -445,6 +438,8 @@ private fun ChatConversation(lines: List<Line>, modifier: Modifier) {
     LaunchedEffect(lines.size, lines.lastOrNull()?.text) {
         if (lines.isNotEmpty()) list.animateScrollToItem(lines.lastIndex)
     }
+    val userShape = remember { RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp) }
+    val aiShape = remember { RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 6.dp, bottomEnd = 20.dp) }
     LazyColumn(
         modifier = modifier.padding(vertical = 4.dp),
         state = list,
@@ -457,18 +452,10 @@ private fun ChatConversation(lines: List<Line>, modifier: Modifier) {
                 contentAlignment = if (line.fromUser) Alignment.CenterEnd else Alignment.CenterStart,
             ) {
                 if (line.fromUser) {
-                    val userShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp)
                     Box(
                         Modifier
                             .clip(userShape)
-                            .background(
-                                Brush.horizontalGradient(
-                                    listOf(
-                                        Color(0xFF38E5FF),
-                                        Color(0xFF7C3AED),
-                                    ),
-                                ),
-                            )
+                            .background(UserChatBubbleGradient)
                             .border(1.dp, Color(0x66FFFFFF), userShape)
                             .padding(horizontal = 15.dp, vertical = 10.dp),
                     ) {
@@ -480,7 +467,6 @@ private fun ChatConversation(lines: List<Line>, modifier: Modifier) {
                         )
                     }
                 } else {
-                    val aiShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 6.dp, bottomEnd = 20.dp)
                     Box(
                         Modifier
                             .clip(aiShape)

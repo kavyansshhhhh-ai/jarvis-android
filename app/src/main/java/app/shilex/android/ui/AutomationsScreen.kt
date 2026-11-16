@@ -2,16 +2,15 @@ package app.shilex.android.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -19,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -26,7 +26,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import app.shilex.android.memory.MemoryRules
 import app.shilex.android.memory.MemoryStore
@@ -68,34 +67,46 @@ private val CLOUD = listOf(
 /** What can be done: on the phone, with the user's OK, or with Gemini. */
 @Composable
 fun AutomationsScreen() {
-    Column(
-        Modifier
+    val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val bottomPadding = floatingDockContentBottomPadding()
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier
             .fillMaxSize()
             .background(OledBlack)
-            .verticalScroll(rememberScrollState())
-            .statusBarsPadding()
-            .padding(horizontal = 20.dp),
+            .statusBarsPadding(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = bottomPadding),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        Column(Modifier.padding(top = 14.dp)) {
-            Text(
-                "Automations",
-                style = MaterialTheme.typography.headlineSmall,
-                color = PureWhite,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                "Say \"${WakeWordModel.PHRASE}\", then the command. English, Hindi and Hinglish.",
-                style = MaterialTheme.typography.bodySmall,
-                color = Muted,
-                modifier = Modifier.padding(top = 4.dp),
-            )
+        item(key = "auto_header") {
+            Column(Modifier.padding(top = 14.dp)) {
+                Text(
+                    "Automations",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = PureWhite,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    "Say \"${WakeWordModel.PHRASE}\", then the command. English, Hindi and Hinglish.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Muted,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
         }
-        Routines()
-        Group("On this phone", "Works without internet and doesn't use your Gemini key.", ElectricCyan, "Local", LOCAL)
-        Group("Tasks with your OK", "Gemini plans them; you finish anything that sends, calls or pays.", AmberWarning, "Needs you", TASKS)
-        Group("With Gemini", "Needs internet; uses your Gemini key.", AmberWarning, "Gemini", CLOUD)
-        FloatingDockBottomSpacer()
+        item(key = "auto_routines") {
+            Routines()
+        }
+        item(key = "auto_local") {
+            Group("On this phone", "Works without internet and doesn't use your Gemini key.", ElectricCyan, "Local", LOCAL)
+        }
+        item(key = "auto_tasks") {
+            Group("Tasks with your OK", "Gemini plans them; you finish anything that sends, calls or pays.", AmberWarning, "Needs you", TASKS)
+        }
+        item(key = "auto_cloud") {
+            Group("With Gemini", "Needs internet; uses your Gemini key.", AmberWarning, "Gemini", CLOUD)
+        }
     }
 }
 

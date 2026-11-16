@@ -124,29 +124,57 @@ class VoiceClassifierTest {
     @Test
     fun bundledHindiVoicesAreGenuineDistinctAndOfflineCapable() {
         val voices = BundledHindiVoices.ALL
-        assertEquals(3, voices.size)
+        assertEquals(7, voices.size)
 
-        // Priyamvada (Female)
+        // 3 distinct Female voices: Priyamvada (Piper/AI4Bharat), hf_alpha & hf_beta (Kokoro-82M)
         val female = voices.filter { it.gender == VoiceGender.Female }
-        assertEquals(1, female.size)
+        assertEquals(3, female.size)
         assertEquals("bundled_hi_female_priyamvada", female[0].id)
         assertEquals("Hindi Female 1", female[0].displayName)
+        assertEquals(BundledEngineKind.PiperVits, female[0].engineKind)
         assertTrue(female[0].modelAssetPath.endsWith(".onnx"))
         assertTrue(female[0].configAssetPath.endsWith(".json"))
-        assertTrue(female[0].sampleAssetPath.endsWith(".mp3"))
         assertEquals(22050, female[0].sampleRate)
         assertTrue(female[0].licenseNotice.isNotBlank())
         assertTrue(female[0].datasetSource.contains("AI4Bharat"))
 
-        // Pratham & Rohan (Male)
+        assertEquals("bundled_hi_female_kokoro_alpha", female[1].id)
+        assertEquals("Hindi Female 2", female[1].displayName)
+        assertEquals(BundledEngineKind.KokoroMultiLang, female[1].engineKind)
+        assertEquals(31, female[1].speakerId)
+        assertEquals("voices/kokoro/voices.bin", female[1].voicesAssetPath)
+        assertEquals(24000, female[1].sampleRate)
+
+        assertEquals("bundled_hi_female_kokoro_beta", female[2].id)
+        assertEquals("Hindi Female 3", female[2].displayName)
+        assertEquals(BundledEngineKind.KokoroMultiLang, female[2].engineKind)
+        assertEquals(32, female[2].speakerId)
+
+        // 4 distinct Male voices: Pratham (Piper), Rohan (Piper), hm_omega & hm_psi (Kokoro-82M)
         val male = voices.filter { it.gender == VoiceGender.Male }
-        assertEquals(2, male.size)
+        assertEquals(4, male.size)
         assertEquals("bundled_hi_male_pratham", male[0].id)
         assertEquals("Hindi Male 1", male[0].displayName)
+        assertEquals(BundledEngineKind.PiperVits, male[0].engineKind)
+
         assertEquals("bundled_hi_male_rohan", male[1].id)
         assertEquals("Hindi Male 2", male[1].displayName)
-        assertTrue(male.all { it.locale == Locale("hi", "IN") })
-        assertTrue(male.all { it.toTtsVoiceInfo().isOfflineCapable })
+        assertEquals(BundledEngineKind.PiperVits, male[1].engineKind)
+
+        assertEquals("bundled_hi_male_kokoro_omega", male[2].id)
+        assertEquals("Hindi Male 3", male[2].displayName)
+        assertEquals(BundledEngineKind.KokoroMultiLang, male[2].engineKind)
+        assertEquals(33, male[2].speakerId)
+
+        assertEquals("bundled_hi_male_kokoro_psi", male[3].id)
+        assertEquals("Hindi Male 4", male[3].displayName)
+        assertEquals(BundledEngineKind.KokoroMultiLang, male[3].engineKind)
+        assertEquals(34, male[3].speakerId)
+
+        assertEquals(7, voices.map { it.id }.toSet().size)
+        assertTrue(voices.all { it.locale == Locale("hi", "IN") })
+        assertTrue(voices.all { it.toTtsVoiceInfo().isOfflineCapable })
+        assertTrue(voices.all { it.modelAssetPath.endsWith(".onnx") && it.tokensAssetPath.endsWith("tokens.txt") })
     }
 
     @Test
@@ -154,24 +182,67 @@ class VoiceClassifierTest {
         val bundled = BundledHindiVoices.ALL.map { it.toTtsVoiceInfo() }
         val catalog = VoiceClassifier.buildHindiCatalog(emptyList(), bundled)
 
-        assertEquals(1, catalog.femaleVoices.size)
+        assertEquals(3, catalog.femaleVoices.size)
         assertEquals("Hindi Female 1", catalog.femaleVoices[0].displayName)
+        assertEquals("Hindi Female 2", catalog.femaleVoices[1].displayName)
+        assertEquals("Hindi Female 3", catalog.femaleVoices[2].displayName)
         assertEquals("bundled_hi_female_priyamvada", catalog.femaleVoices[0].id)
-        assertTrue(catalog.femaleVoices[0].isBundled)
-        assertTrue(catalog.femaleVoices[0].isOfflineCapable)
+        assertTrue(catalog.femaleVoices.all { it.isBundled && it.isOfflineCapable })
 
-        assertEquals(2, catalog.maleVoices.size)
+        assertEquals(4, catalog.maleVoices.size)
         assertEquals("Hindi Male 1", catalog.maleVoices[0].displayName)
-        assertEquals("bundled_hi_male_pratham", catalog.maleVoices[0].id)
         assertEquals("Hindi Male 2", catalog.maleVoices[1].displayName)
-        assertEquals("bundled_hi_male_rohan", catalog.maleVoices[1].id)
+        assertEquals("Hindi Male 3", catalog.maleVoices[2].displayName)
+        assertEquals("Hindi Male 4", catalog.maleVoices[3].displayName)
+        assertEquals("bundled_hi_male_pratham", catalog.maleVoices[0].id)
         assertTrue(catalog.maleVoices.all { it.isBundled && it.isOfflineCapable })
+
+        // Verify 5-per-category cap holds when combined with system voices, keeping bundled first
+        val extraSystem = (1..4).flatMap { i ->
+            listOf(
+                RawTtsVoice("sys_hi_f_$i", Locale("hi", "IN"), isNetworkRequired = false, qualityScore = 400, features = setOf("gender=female")),
+                RawTtsVoice("sys_hi_m_$i", Locale("hi", "IN"), isNetworkRequired = false, qualityScore = 400, features = setOf("gender=male")),
+            )
+        }
+        val cappedCatalog = VoiceClassifier.buildHindiCatalog(extraSystem, bundled)
+        assertEquals(5, cappedCatalog.femaleVoices.size)
+        assertEquals(5, cappedCatalog.maleVoices.size)
+        assertEquals("bundled_hi_female_priyamvada", cappedCatalog.femaleVoices[0].id)
+        assertEquals("bundled_hi_male_pratham", cappedCatalog.maleVoices[0].id)
     }
 
     @Test
-    fun runtimeBundledVoicesStayEmptyWhenOfflineSynthesisIsNotIntegrated() {
-        assertFalse(BundledHindiVoices.IS_OFFLINE_SYNTHESIS_INTEGRATED)
+    fun offlineSynthesisIsIntegratedAndEffectiveVoiceSelectionPersistsAcrossDefaults() {
+        assertTrue(BundledHindiVoices.IS_OFFLINE_SYNTHESIS_INTEGRATED)
         assertTrue(BundledHindiVoices.availableForRuntime(null).isEmpty())
+
+        val catalog = VoiceClassifier.buildHindiCatalog(emptyList(), BundledHindiVoices.ALL.map { it.toTtsVoiceInfo() })
+
+        // Default female / male fallback when no saved voice ID exists
+        assertEquals(
+            "bundled_hi_female_priyamvada",
+            VoiceClassifier.resolveEffectiveVoiceId(null, catalog, preferMale = false),
+        )
+        assertEquals(
+            "bundled_hi_male_pratham",
+            VoiceClassifier.resolveEffectiveVoiceId(null, catalog, preferMale = true),
+        )
+
+        // Preserves user's saved selection exactly
+        assertEquals(
+            "bundled_hi_male_kokoro_psi",
+            VoiceClassifier.resolveEffectiveVoiceId("bundled_hi_male_kokoro_psi", catalog, preferMale = false),
+        )
+        assertEquals(
+            "bundled_hi_female_kokoro_beta",
+            VoiceClassifier.resolveEffectiveVoiceId("bundled_hi_female_kokoro_beta", catalog, preferMale = true),
+        )
+
+        // Missing/removed voice falls back cleanly to gender preference
+        assertEquals(
+            "bundled_hi_male_pratham",
+            VoiceClassifier.resolveEffectiveVoiceId("removed_voice_id", catalog, preferMale = true),
+        )
     }
 }
 

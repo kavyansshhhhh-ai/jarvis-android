@@ -157,45 +157,82 @@ val Surface: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorSc
 val Muted: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onSurfaceVariant
 val Warning: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.tertiary
 
-// Smoked Frosted Liquid Glass Brushes
-val GlassBorderGradient: Brush
-    get() = Brush.verticalGradient(
-        listOf(
-            Color(0x47FFFFFF), // crisp top specular highlight
-            Color(0x1CFFFFFF),
-            Color(0x28FFFFFF), // subtle bottom glass refraction
-        ),
-    )
+// Smoked Frosted Liquid Glass Brushes (cached once to eliminate per-frame allocations)
+val GlassBorderGradient: Brush = Brush.verticalGradient(
+    listOf(
+        Color(0x47FFFFFF), // crisp top specular highlight
+        Color(0x1CFFFFFF),
+        Color(0x28FFFFFF), // subtle bottom glass refraction
+    ),
+)
 
-val GlassSurfaceGradient: Brush
-    get() = Brush.verticalGradient(
-        listOf(
-            Color(0xCC1B1B20),
-            Color(0xB3121216),
-        ),
-    )
+val GlassSurfaceGradient: Brush = Brush.verticalGradient(
+    listOf(
+        Color(0xCC1B1B20),
+        Color(0xB3121216),
+    ),
+)
 
-val GlassDockSurfaceGradient: Brush
-    get() = Brush.verticalGradient(
-        listOf(
-            Color(0xB81D1D23),
-            Color(0xD6111115),
-        ),
-    )
+val GlassDockSurfaceGradient: Brush = Brush.verticalGradient(
+    listOf(
+        Color(0xB81D1D23),
+        Color(0xD6111115),
+    ),
+)
 
-val GlassDockBorderGradient: Brush
-    get() = Brush.verticalGradient(
-        listOf(
-            Color(0x59FFFFFF),
-            Color(0x2138E5FF),
-            Color(0x30FFFFFF),
-        ),
-    )
+val GlassDockBorderGradient: Brush = Brush.verticalGradient(
+    listOf(
+        Color(0x59FFFFFF),
+        Color(0x2138E5FF),
+        Color(0x30FFFFFF),
+    ),
+)
 
-val GlassAccentGradient: Brush
-    get() = Brush.horizontalGradient(
-        listOf(
-            Color(0xFF38E5FF),
-            Color(0xFF9D65FF),
-        ),
-    )
+val GlassAccentGradient: Brush = Brush.horizontalGradient(
+    listOf(
+        Color(0xFF38E5FF),
+        Color(0xFF9D65FF),
+    ),
+)
+
+val UserChatBubbleGradient: Brush = Brush.horizontalGradient(
+    listOf(
+        Color(0xFF38E5FF),
+        Color(0xFF7C3AED),
+    ),
+)
+
+val LiveStopButtonGradient: Brush = Brush.verticalGradient(
+    listOf(
+        Color(0xFFE54D4D),
+        Color(0xFF9E1F1F),
+    ),
+)
+
+val TalkButtonGradient: Brush = Brush.verticalGradient(
+    listOf(
+        Color(0xFF45EEFF),
+        Color(0xFF0C94A8),
+    ),
+)
+
+val ButtonRimGradient: Brush = Brush.verticalGradient(
+    listOf(
+        Color(0xAAFFFFFF),
+        Color(0x33FFFFFF),
+    ),
+)
+
+val NeutralRowIconBgGradient: Brush = Brush.verticalGradient(
+    listOf(
+        Color(0x21FFFFFF),
+        Color(0x0DFFFFFF),
+    ),
+)
+
+val NeutralRowIconBorderGradient: Brush = Brush.verticalGradient(
+    listOf(
+        Color(0x33FFFFFF),
+        Color(0x10FFFFFF),
+    ),
+)

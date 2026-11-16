@@ -2,7 +2,6 @@ package app.shilex.android.ui
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -19,10 +18,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,13 +37,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -106,22 +106,27 @@ fun GlassRowIcon(
     accentGlow: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    val bgBrush = if (accentGlow) {
-        Brush.verticalGradient(listOf(tint.copy(alpha = 0.24f), tint.copy(alpha = 0.10f)))
-    } else {
-        Brush.verticalGradient(listOf(Color(0x21FFFFFF), Color(0x0DFFFFFF)))
+    val iconShape = remember { RoundedCornerShape(10.dp) }
+    val bgBrush = remember(tint, accentGlow) {
+        if (accentGlow) {
+            Brush.verticalGradient(listOf(tint.copy(alpha = 0.24f), tint.copy(alpha = 0.10f)))
+        } else {
+            NeutralRowIconBgGradient
+        }
     }
-    val borderBrush = if (accentGlow) {
-        Brush.verticalGradient(listOf(tint.copy(alpha = 0.45f), Color(0x14FFFFFF)))
-    } else {
-        Brush.verticalGradient(listOf(Color(0x33FFFFFF), Color(0x10FFFFFF)))
+    val borderBrush = remember(tint, accentGlow) {
+        if (accentGlow) {
+            Brush.verticalGradient(listOf(tint.copy(alpha = 0.45f), Color(0x14FFFFFF)))
+        } else {
+            NeutralRowIconBorderGradient
+        }
     }
     Box(
         modifier = modifier
             .size(34.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .clip(iconShape)
             .background(bgBrush)
-            .border(0.7.dp, borderBrush, RoundedCornerShape(10.dp)),
+            .border(0.7.dp, borderBrush, iconShape),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
@@ -145,7 +150,10 @@ fun Modifier.glassPressScale(interactionSource: MutableInteractionSource): Modif
         ),
         label = "glassPressScale",
     )
-    return this.scale(scale)
+    return this.graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+    }
 }
 
 /** A titled group of rows inside a floating smoked Liquid Glass card (Title-case hierarchy). */
@@ -207,15 +215,15 @@ fun SwitchRow(
     }
 }
 
-/** iOS-style Liquid Glass toggle switch with fluid spring physics. */
+/** iOS-style Liquid Glass toggle switch with fluid GPU-composited spring physics. */
 @Composable
 fun IosGlassSwitch(
     checked: Boolean,
     enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit,
 ) {
-    val thumbOffset by animateDpAsState(
-        targetValue = if (checked) 22.dp else 2.dp,
+    val thumbProgress by animateFloatAsState(
+        targetValue = if (checked) 1f else 0f,
         animationSpec = spring(
             dampingRatio = 0.72f,
             stiffness = Spring.StiffnessMediumLow,
@@ -232,23 +240,20 @@ fun IosGlassSwitch(
         animationSpec = tween(durationMillis = 200),
         label = "switchBorder",
     )
+    val density = LocalDensity.current
+    val baseStartPx = with(density) { 2.dp.toPx() }
+    val travelPx = with(density) { 20.dp.toPx() }
+    val switchShape = remember { RoundedCornerShape(16.dp) }
+    val switchInteraction = remember { MutableInteractionSource() }
 
     Box(
         modifier = Modifier
             .size(width = 50.dp, height = 30.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(switchShape)
             .background(Color(0x24FFFFFF))
-            .background(
-                Brush.horizontalGradient(
-                    listOf(
-                        ElectricCyan.copy(alpha = trackAlpha),
-                        NeonViolet.copy(alpha = trackAlpha),
-                    ),
-                ),
-            )
-            .border(1.dp, borderColor, RoundedCornerShape(16.dp))
+            .border(1.dp, borderColor, switchShape)
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = switchInteraction,
                 indication = null,
                 enabled = enabled,
             ) { onCheckedChange(!checked) },
@@ -256,7 +261,13 @@ fun IosGlassSwitch(
     ) {
         Box(
             modifier = Modifier
-                .offset(x = thumbOffset)
+                .fillMaxSize()
+                .graphicsLayer { alpha = trackAlpha }
+                .background(GlassAccentGradient),
+        )
+        Box(
+            modifier = Modifier
+                .graphicsLayer { translationX = baseStartPx + thumbProgress * travelPx }
                 .size(26.dp)
                 .shadow(elevation = if (checked) 5.dp else 3.dp, shape = CircleShape, spotColor = if (checked) ElectricCyan else Color.Black)
                 .background(Color.White, CircleShape)
@@ -303,27 +314,27 @@ fun Pill(
     modifier: Modifier = Modifier,
     dot: Boolean = true,
 ) {
+    val pillShape = remember { RoundedCornerShape(50) }
+    val bgBrush = remember(color) {
+        Brush.horizontalGradient(
+            listOf(
+                color.copy(alpha = 0.16f),
+                color.copy(alpha = 0.08f),
+            ),
+        )
+    }
+    val borderBrush = remember(color) {
+        Brush.horizontalGradient(
+            listOf(
+                color.copy(alpha = 0.45f),
+                color.copy(alpha = 0.16f),
+            ),
+        )
+    }
     Row(
         modifier
-            .background(
-                Brush.horizontalGradient(
-                    listOf(
-                        color.copy(alpha = 0.16f),
-                        color.copy(alpha = 0.08f),
-                    ),
-                ),
-                RoundedCornerShape(50),
-            )
-            .border(
-                0.8.dp,
-                Brush.horizontalGradient(
-                    listOf(
-                        color.copy(alpha = 0.45f),
-                        color.copy(alpha = 0.16f),
-                    ),
-                ),
-                RoundedCornerShape(50),
-            )
+            .background(bgBrush, pillShape)
+            .border(0.8.dp, borderBrush, pillShape)
             .padding(horizontal = 11.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),

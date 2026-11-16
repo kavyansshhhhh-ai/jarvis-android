@@ -65,4 +65,47 @@ class PlayStoreMatcherTest {
         val decision = PlayStoreMatcher.analyzeScreen("Spotify", elements)
         assertEquals(PlayStoreMatcher.ButtonState.InstallingOrPending, decision.buttonState)
     }
+
+    @Test
+    fun handlesFreeInstallVariantPlayOpenStateAndWaitingPending() {
+        val freeInstall = listOf(
+            ScreenElement(1, "text", "WhatsApp Messenger", ""),
+            ScreenElement(2, "button", "Install (free)", ""),
+        )
+        val d1 = PlayStoreMatcher.analyzeScreen("WhatsApp", freeInstall)
+        assertEquals(PlayStoreMatcher.ButtonState.Install, d1.buttonState)
+        assertEquals(2, d1.actionElement?.number)
+
+        val playInstalled = listOf(
+            ScreenElement(1, "text", "Subway Surfers", ""),
+            ScreenElement(2, "button", "Uninstall", ""),
+            ScreenElement(3, "button", "Play", ""),
+        )
+        val d2 = PlayStoreMatcher.analyzeScreen("Subway Surfers", playInstalled)
+        assertEquals(PlayStoreMatcher.ButtonState.Open, d2.buttonState)
+        assertTrue(d2.isVerifiedInstalledUi)
+
+        val waitingWifi = listOf(
+            ScreenElement(1, "text", "Spotify", ""),
+            ScreenElement(2, "text", "Waiting for Wi-Fi", ""),
+        )
+        val d3 = PlayStoreMatcher.analyzeScreen("Spotify", waitingWifi)
+        assertEquals(PlayStoreMatcher.ButtonState.InstallingOrPending, d3.buttonState)
+    }
+
+    @Test
+    fun locatesSearchBarAndFlagsAmbiguousListings() {
+        val searchElements = listOf(
+            ScreenElement(1, "button", "Search apps & games", ""),
+            ScreenElement(2, "button", "LastWave", ""),
+            ScreenElement(3, "button", "LastWave", ""),
+        )
+        val searchBtn = PlayStoreMatcher.findSearchInput(searchElements)
+        assertNotNull(searchBtn)
+        assertEquals(1, searchBtn?.number)
+
+        val ambiguousDecision = PlayStoreMatcher.analyzeScreen("LastWave", searchElements)
+        assertEquals(PlayStoreMatcher.ButtonState.None, ambiguousDecision.buttonState)
+        assertEquals(2, ambiguousDecision.ambiguousListings.size)
+    }
 }

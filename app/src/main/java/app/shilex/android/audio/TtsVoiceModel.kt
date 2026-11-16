@@ -13,6 +13,12 @@ enum class VoiceGender(val label: String) {
     Unspecified("Unspecified"),
 }
 
+/** Backing offline neural synthesizer engine type for bundled Hindi voices. */
+enum class BundledEngineKind {
+    PiperVits,
+    KokoroMultiLang,
+}
+
 /** Lightweight, JVM-testable representation of an Android TextToSpeech Voice. */
 data class RawTtsVoice(
     val id: String,
@@ -51,9 +57,14 @@ data class BundledHindiVoice(
     val displayName: String,
     val gender: VoiceGender,
     val locale: Locale = Locale("hi", "IN"),
+    val engineKind: BundledEngineKind = BundledEngineKind.PiperVits,
     val modelAssetPath: String,
+    val tokensAssetPath: String,
     val configAssetPath: String,
-    val sampleAssetPath: String,
+    val voicesAssetPath: String = "",
+    val speakerId: Int = 0,
+    val lang: String = "hi",
+    val sampleAssetPath: String = "",
     val sampleRate: Int = 22050,
     val licenseNotice: String,
     val datasetSource: String,
@@ -68,69 +79,154 @@ data class BundledHindiVoice(
         isInstalled = true,
         isBundled = true,
         modelAssetPath = modelAssetPath,
-        sampleAssetPath = sampleAssetPath,
+        sampleAssetPath = sampleAssetPath.ifEmpty { null },
         licenseNotice = licenseNotice,
         datasetSource = datasetSource,
     )
 }
 
 /**
- * Verified offline Hindi voices bundled inside the APK assets.
- * 100% genuine, distinct, natural-sounding, offline-capable, under compatible open licenses.
+ * Verified offline Hindi voices bundled inside the APK assets and synthesized offline via Sherpa-ONNX.
+ * Every voice is backed by a distinct genuine trained speaker / model with verified gender metadata;
+ * zero pitch-shifted clones or guessed genders.
+ *
+ * Total genuinely available open-source offline neural Hindi models compatible with bundled APK size:
+ * - 3 Female: Priyamvada (Piper/AI4Bharat), hf_alpha (Kokoro), hf_beta (Kokoro)
+ * - 4 Male: Pratham (Piper/AI4Bharat), Rohan (Piper/IndicTTS), hm_omega (Kokoro), hm_psi (Kokoro)
  */
 object BundledHindiVoices {
+    const val ESPEAK_DATA_ASSET_DIR = "voices/espeak-ng-data"
+    const val ESPEAK_MARKER_ASSET = "voices/espeak-ng-data/hi_dict"
+
     val PRIYAMVADA = BundledHindiVoice(
         id = "bundled_hi_female_priyamvada",
         displayName = "Hindi Female 1",
         gender = VoiceGender.Female,
-        modelAssetPath = "voices/hi_IN-priyamvada-medium.onnx",
-        configAssetPath = "voices/hi_IN-priyamvada-medium.onnx.json",
-        sampleAssetPath = "voices/hi_IN-priyamvada-medium.sample.mp3",
+        engineKind = BundledEngineKind.PiperVits,
+        modelAssetPath = "voices/piper/priyamvada/hi_IN-priyamvada-medium.onnx",
+        tokensAssetPath = "voices/piper/priyamvada/tokens.txt",
+        configAssetPath = "voices/piper/priyamvada/hi_IN-priyamvada-medium.onnx.json",
         sampleRate = 22050,
         licenseNotice = "CC BY-NC-SA 4.0",
-        datasetSource = "AI4Bharat IndicNLP Hindi Female",
+        datasetSource = "AI4Bharat IndicNLP Hindi Female (Piper VITS int8)",
+    )
+
+    val HF_ALPHA = BundledHindiVoice(
+        id = "bundled_hi_female_kokoro_alpha",
+        displayName = "Hindi Female 2",
+        gender = VoiceGender.Female,
+        engineKind = BundledEngineKind.KokoroMultiLang,
+        modelAssetPath = "voices/kokoro/model.int8.onnx",
+        tokensAssetPath = "voices/kokoro/tokens.txt",
+        configAssetPath = "voices/kokoro/tokens.txt",
+        voicesAssetPath = "voices/kokoro/voices.bin",
+        speakerId = 31,
+        lang = "hi",
+        sampleRate = 24000,
+        licenseNotice = "Apache-2.0",
+        datasetSource = "Kokoro-82M Hindi Female hf_alpha (sid 31)",
+    )
+
+    val HF_BETA = BundledHindiVoice(
+        id = "bundled_hi_female_kokoro_beta",
+        displayName = "Hindi Female 3",
+        gender = VoiceGender.Female,
+        engineKind = BundledEngineKind.KokoroMultiLang,
+        modelAssetPath = "voices/kokoro/model.int8.onnx",
+        tokensAssetPath = "voices/kokoro/tokens.txt",
+        configAssetPath = "voices/kokoro/tokens.txt",
+        voicesAssetPath = "voices/kokoro/voices.bin",
+        speakerId = 32,
+        lang = "hi",
+        sampleRate = 24000,
+        licenseNotice = "Apache-2.0",
+        datasetSource = "Kokoro-82M Hindi Female hf_beta (sid 32)",
     )
 
     val PRATHAM = BundledHindiVoice(
         id = "bundled_hi_male_pratham",
         displayName = "Hindi Male 1",
         gender = VoiceGender.Male,
-        modelAssetPath = "voices/hi_IN-pratham-medium.onnx",
-        configAssetPath = "voices/hi_IN-pratham-medium.onnx.json",
-        sampleAssetPath = "voices/hi_IN-pratham-medium.sample.mp3",
+        engineKind = BundledEngineKind.PiperVits,
+        modelAssetPath = "voices/piper/pratham/hi_IN-pratham-medium.onnx",
+        tokensAssetPath = "voices/piper/pratham/tokens.txt",
+        configAssetPath = "voices/piper/pratham/hi_IN-pratham-medium.onnx.json",
         sampleRate = 22050,
         licenseNotice = "CC BY-NC-SA 4.0",
-        datasetSource = "AI4Bharat IndicNLP Hindi Male",
+        datasetSource = "AI4Bharat IndicNLP Hindi Male (Piper VITS int8)",
     )
 
     val ROHAN = BundledHindiVoice(
         id = "bundled_hi_male_rohan",
         displayName = "Hindi Male 2",
         gender = VoiceGender.Male,
-        modelAssetPath = "voices/hi_IN-rohan-medium.onnx",
-        configAssetPath = "voices/hi_IN-rohan-medium.onnx.json",
-        sampleAssetPath = "voices/hi_IN-rohan-medium.sample.mp3",
+        engineKind = BundledEngineKind.PiperVits,
+        modelAssetPath = "voices/piper/rohan/hi_IN-rohan-medium.onnx",
+        tokensAssetPath = "voices/piper/rohan/tokens.txt",
+        configAssetPath = "voices/piper/rohan/hi_IN-rohan-medium.onnx.json",
         sampleRate = 22050,
         licenseNotice = "IIT Madras IndicTTS License",
-        datasetSource = "IIT Madras IndicTTS Hindi Mono Male",
+        datasetSource = "IIT Madras IndicTTS Hindi Male (Piper VITS int8)",
     )
 
-    val ALL: List<BundledHindiVoice> = listOf(PRIYAMVADA, PRATHAM, ROHAN)
+    val HM_OMEGA = BundledHindiVoice(
+        id = "bundled_hi_male_kokoro_omega",
+        displayName = "Hindi Male 3",
+        gender = VoiceGender.Male,
+        engineKind = BundledEngineKind.KokoroMultiLang,
+        modelAssetPath = "voices/kokoro/model.int8.onnx",
+        tokensAssetPath = "voices/kokoro/tokens.txt",
+        configAssetPath = "voices/kokoro/tokens.txt",
+        voicesAssetPath = "voices/kokoro/voices.bin",
+        speakerId = 33,
+        lang = "hi",
+        sampleRate = 24000,
+        licenseNotice = "Apache-2.0",
+        datasetSource = "Kokoro-82M Hindi Male hm_omega (sid 33)",
+    )
 
-    /**
-     * True only when an in-app neural TTS synthesizer (e.g. Piper/VITS ONNX runtime) is integrated
-     * and paired with physical `.onnx` weights in APK assets.
-     */
-    const val IS_OFFLINE_SYNTHESIS_INTEGRATED = false
+    val HM_PSI = BundledHindiVoice(
+        id = "bundled_hi_male_kokoro_psi",
+        displayName = "Hindi Male 4",
+        gender = VoiceGender.Male,
+        engineKind = BundledEngineKind.KokoroMultiLang,
+        modelAssetPath = "voices/kokoro/model.int8.onnx",
+        tokensAssetPath = "voices/kokoro/tokens.txt",
+        configAssetPath = "voices/kokoro/tokens.txt",
+        voicesAssetPath = "voices/kokoro/voices.bin",
+        speakerId = 34,
+        lang = "hi",
+        sampleRate = 24000,
+        licenseNotice = "Apache-2.0",
+        datasetSource = "Kokoro-82M Hindi Male hm_psi (sid 34)",
+    )
+
+    val ALL: List<BundledHindiVoice> = listOf(
+        PRIYAMVADA,
+        HF_ALPHA,
+        HF_BETA,
+        PRATHAM,
+        ROHAN,
+        HM_OMEGA,
+        HM_PSI,
+    )
+
+    /** True: in-app Sherpa-ONNX offline neural TTS runtime is integrated and reads bundled APK assets. */
+    const val IS_OFFLINE_SYNTHESIS_INTEGRATED = true
 
     fun find(voiceId: String?): BundledHindiVoice? = ALL.firstOrNull { it.id == voiceId }
 
     fun isModelBundled(context: Context?, voice: BundledHindiVoice): Boolean {
         if (!IS_OFFLINE_SYNTHESIS_INTEGRATED || context == null) return false
-        val hasModel = runCatching { context.assets.open(voice.modelAssetPath).use { true } }.getOrDefault(false)
-        val hasConfig = runCatching { context.assets.open(voice.configAssetPath).use { true } }.getOrDefault(false)
-        return hasModel && hasConfig
+        val hasModel = assetExists(context, voice.modelAssetPath)
+        val hasTokens = assetExists(context, voice.tokensAssetPath)
+        val hasEspeak = assetExists(context, ESPEAK_MARKER_ASSET)
+        val hasVoices = voice.voicesAssetPath.isEmpty() || assetExists(context, voice.voicesAssetPath)
+        return hasModel && hasTokens && hasEspeak && hasVoices
     }
+
+    private fun assetExists(context: Context, assetPath: String): Boolean =
+        runCatching { context.assets.open(assetPath).use { true } }.getOrDefault(false)
 
     fun availableForRuntime(context: Context?): List<TtsVoiceInfo> =
         ALL.filter { isModelBundled(context, it) }.map { it.toTtsVoiceInfo() }
@@ -267,9 +363,10 @@ object VoiceClassifier {
             }
             .toList()
 
-        val allCombined = (bundledVoices + systemHindi)
-            .distinctBy { it.id }
-            .sortedWith(comparator)
+        // Preserve stable bundled declaration order at top while sorting system voices cleanly
+        val orderedBundled = bundledVoices.toList()
+        val orderedSystem = systemHindi.sortedWith(comparator)
+        val allCombined = (orderedBundled + orderedSystem).distinctBy { it.id }
 
         val allFemale = allCombined
             .filter { it.gender == VoiceGender.Female }
@@ -290,8 +387,25 @@ object VoiceClassifier {
             totalMaleFound = allMale.size,
             totalHindiVoicesCount = allCombined.size,
             installedHindiVoicesCount = allCombined.count { it.isInstalled || it.isBundled },
-            bundledVoicesCount = bundledVoices.size,
+            bundledVoicesCount = orderedBundled.size,
         )
+    }
+
+    /** Resolves which voice ID should be treated as effectively selected when persisting or initializing. */
+    fun resolveEffectiveVoiceId(
+        savedVoiceId: String?,
+        catalog: HindiVoiceCatalog,
+        preferMale: Boolean = false,
+    ): String? {
+        val all = catalog.femaleVoices + catalog.maleVoices
+        if (all.isEmpty()) return savedVoiceId
+        if (!savedVoiceId.isNullOrBlank() && all.any { it.id == savedVoiceId }) {
+            return savedVoiceId
+        }
+        val preferredList = if (preferMale) catalog.maleVoices else catalog.femaleVoices
+        return preferredList.firstOrNull { it.isBundled || it.isInstalled }?.id
+            ?: all.firstOrNull { it.isBundled || it.isInstalled }?.id
+            ?: all.firstOrNull()?.id
     }
 
     /** Clean, non-technical display name for the user-facing list. */

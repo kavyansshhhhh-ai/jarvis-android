@@ -160,4 +160,35 @@ class ControlRulesTest {
         assertEquals(listOf(1), ScreenText.find(elements, "all").map { it.number })
         assertEquals(70, ScreenText.shorten("x".repeat(200)).length)
     }
+
+    @Test
+    fun playStoreAutomationScopeUnblocksOnlyPlayStoreWhileKeepingVaultsAndSettingsBlocked() {
+        assertTrue(ControlRules.blocked(ControlRules.PLAY_STORE_PACKAGE))
+        assertFalse(ControlRules.blocked(ControlRules.PLAY_STORE_PACKAGE, allowPlayStoreAutomation = true))
+
+        listOf(
+            "com.android.settings",
+            "app.shilex.android",
+            "com.x8bit.bitwarden",
+            "org.npci.upi.security.pinactivitycomponent",
+        ).forEach { pkg ->
+            assertTrue(pkg, ControlRules.blocked(pkg, allowPlayStoreAutomation = true))
+        }
+    }
+
+    @Test
+    fun screenTextIncludesSelectedAndDisabledStatesOnlyWhenNonDefault() {
+        val text = ScreenText.describe(
+            "Instagram",
+            listOf(
+                ScreenElement(1, "button", "Home", isEnabled = true, isSelected = false),
+                ScreenElement(2, "button", "Reels", isEnabled = true, isSelected = true),
+                ScreenElement(3, "button", "Install", isEnabled = false, isSelected = false),
+            ),
+            more = false,
+        )
+        assertTrue("1. [button] Home" in text)
+        assertTrue("2. [button] [selected] Reels" in text)
+        assertTrue("3. [button] [disabled] Install" in text)
+    }
 }

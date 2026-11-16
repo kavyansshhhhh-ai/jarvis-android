@@ -12,3 +12,6 @@
 
 # Our SpeexDSP echo canceller: the JNI functions are named after this class and its methods.
 -keep class app.shilex.android.audio.EchoCanceller { *; }
+
+# Sherpa-ONNX offline neural TTS runtime invokes Java callbacks from native JNI code.
+-keep class com.k2fsa.sherpa.onnx.** { *; }

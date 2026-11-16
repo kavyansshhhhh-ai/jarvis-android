@@ -12,6 +12,11 @@
 | JNA (through Vosk) | 5.x | Apache-2.0 / LGPL-2.1 (dual) | Used under Apache-2.0 |
 | `vosk-model-small-en-in-0.4` | 0.4 | Apache-2.0 (per alphacephei.com/vosk/models) | Downloaded at build time, checked against a pinned SHA-256, not stored in git |
 | SpeexDSP | 1.2.1 | BSD-3-Clause | Echo canceller, compiled unchanged from `app/src/main/cpp/speexdsp/` (licence in its `COPYING`) |
+| Sherpa-ONNX Android (static ONNX Runtime) | 1.13.8 | Apache-2.0 | Offline neural Hindi text-to-speech synthesis runtime (`OfflineTts`) |
+| Kokoro-82M Multi-Lang int8 (`hf_alpha`, `hf_beta`, `hm_omega`, `hm_psi`) | v1.0 | Apache-2.0 | Bundled offline Hindi Female & Male neural voices |
+| Piper Hindi VITS int8 (`hi_IN-priyamvada-medium`, `hi_IN-pratham-medium`) | medium | CC BY-NC-SA 4.0 (AI4Bharat IndicNLP corpus) | Bundled offline Hindi Female & Male neural voices (for non-commercial use under dataset licence) |
+| Piper Hindi VITS int8 (`hi_IN-rohan-medium`) | medium | IIT Madras IndicTTS Licence | Bundled offline Hindi Male neural voice |
+| eSpeak NG phonemizer data | 1.52-dev | GPL-3.0+ | Bundled G2P phonemization rules for Devanagari Hindi inside `voices/espeak-ng-data` |
 
 ## Services the app talks to
 

@@ -13,13 +13,22 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -27,6 +36,10 @@ import app.shilex.android.local.ActivityLog
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+private val SingleCardShape = RoundedCornerShape(24.dp)
+private val FirstCardShape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+private val LastCardShape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp)
 
 /** What the assistant did recently, newest first; kept in memory only. */
 @Composable
@@ -84,19 +97,57 @@ fun ActivityScreen(entries: List<ActivityLog.Entry>, onClear: () -> Unit) {
             return
         }
 
+        val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+        val timeFormatter = remember { SimpleDateFormat("h:mm a", Locale.ENGLISH) }
+        val bottomPadding = floatingDockContentBottomPadding()
+
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            contentPadding = PaddingValues(bottom = floatingDockContentBottomPadding()),
+            contentPadding = PaddingValues(bottom = bottomPadding),
         ) {
-            item {
-                GlassCard(modifier = Modifier.fillMaxWidth()) {
-                    entries.forEachIndexed { idx, entry ->
-                        ActivityRow(entry)
-                        if (idx < entries.lastIndex) {
-                            GlassDivider()
+            itemsIndexed(
+                items = entries,
+                key = { index, entry -> "${entry.at}_${entry.local}_${entry.what.hashCode()}_$index" },
+            ) { idx, entry ->
+                val isFirst = idx == 0
+                val isLast = idx == entries.lastIndex
+                val rowShape = when {
+                    isFirst && isLast -> SingleCardShape
+                    isFirst -> FirstCardShape
+                    isLast -> LastCardShape
+                    else -> RectangleShape
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(rowShape)
+                        .background(GlassSurfaceGradient)
+                        .drawBehind {
+                            val strokePx = 1.dp.toPx()
+                            val sideColor = GlassBorderSubtle
+                            // Side hairline strokes keep contiguous card silhouette without double seams
+                            drawLine(sideColor, Offset(0f, 0f), Offset(0f, size.height), strokeWidth = strokePx)
+                            drawLine(sideColor, Offset(size.width, 0f), Offset(size.width, size.height), strokeWidth = strokePx)
+                            if (isFirst) {
+                                drawLine(Color(0x47FFFFFF), Offset(0f, 0f), Offset(size.width, 0f), strokeWidth = strokePx)
+                            }
+                            if (isLast) {
+                                drawLine(Color(0x28FFFFFF), Offset(0f, size.height), Offset(size.width, size.height), strokeWidth = strokePx)
+                            }
                         }
+                        .padding(
+                            start = 16.dp,
+                            end = 16.dp,
+                            top = if (isFirst) 6.dp else 0.dp,
+                            bottom = if (isLast) 6.dp else 0.dp,
+                        ),
+                ) {
+                    ActivityRow(entry = entry, timeFormat = timeFormatter)
+                    if (!isLast) {
+                        GlassDivider()
                     }
                 }
             }
@@ -105,7 +156,11 @@ fun ActivityScreen(entries: List<ActivityLog.Entry>, onClear: () -> Unit) {
 }
 
 @Composable
-fun ActivityRow(entry: ActivityLog.Entry) {
+fun ActivityRow(entry: ActivityLog.Entry, timeFormat: SimpleDateFormat? = null) {
+    val formatter = timeFormat ?: remember { SimpleDateFormat("h:mm a", Locale.ENGLISH) }
+    val formattedTime = remember(entry.at, formatter) {
+        formatter.format(Date(entry.at))
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -134,7 +189,7 @@ fun ActivityRow(entry: ActivityLog.Entry) {
                 dot = false,
             )
             Text(
-                SimpleDateFormat("h:mm a", Locale.ENGLISH).format(Date(entry.at)),
+                formattedTime,
                 style = MaterialTheme.typography.bodySmall,
                 color = Muted,
                 fontSize = 11.sp,

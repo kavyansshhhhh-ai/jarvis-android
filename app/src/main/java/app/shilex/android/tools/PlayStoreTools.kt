@@ -30,11 +30,18 @@ object PlayStoreMatcher {
         val actionElement: ScreenElement? = null,
         val matchedListingElement: ScreenElement? = null,
         val reason: String = "",
+        val ambiguousListings: List<ScreenElement> = emptyList(),
+        val isVerifiedInstalledUi: Boolean = false,
     )
 
     private val PRICE_OR_BUY_RE = Regex("""(?:₹|rs\.?|inr|\$|€|£)\s*\d|\bbuy\b""", RegexOption.IGNORE_CASE)
-    private val INSTALLING_RE = Regex("""\b(installing|pending|downloading|cancel|uninstalling)\b|%\s*$""", RegexOption.IGNORE_CASE)
+    private val INSTALLING_RE = Regex("""\b(installing|pending|waiting\b.*|downloading|cancel|uninstalling)\b|%\s*$""", RegexOption.IGNORE_CASE)
+    private val INSTALL_BTN_RE = Regex("""^(?:install(?:\s*[·•(-]\s*free\)?)?|free\s+install|get)$""", RegexOption.IGNORE_CASE)
+    private val OPEN_BTN_RE = Regex("""^(?:open|play)$""", RegexOption.IGNORE_CASE)
+    private val UPDATE_BTN_RE = Regex("""^update$""", RegexOption.IGNORE_CASE)
+    private val INSTALLED_BADGE_RE = Regex("""^(?:installed|uninstall)$""", RegexOption.IGNORE_CASE)
     private val AUTH_OR_AGE_RE = Regex("""\b(sign in|verify|age|parental|ask to buy|add a payment method|complete account setup|continue payment|password)\b""", RegexOption.IGNORE_CASE)
+    private val SEARCH_BAR_RE = Regex("""\b(search\s+apps(?:\s*(?:&|and)\s*games)?|search\s+google\s+play|search\s+for\s+apps)\b""", RegexOption.IGNORE_CASE)
 
     fun normalize(text: String): String = AppCatalog.compactKey(text)
 
@@ -51,6 +58,14 @@ object PlayStoreMatcher {
         return null
     }
 
+    /** Finds a visible Play Store search input field or search bar button cleanly. */
+    fun findSearchInput(elements: List<ScreenElement>): ScreenElement? =
+        elements.firstOrNull { el ->
+            (el.role == "field" || el.role == "button") &&
+                el.isEnabled &&
+                (SEARCH_BAR_RE.containsMatchIn(el.label) || SEARCH_BAR_RE.containsMatchIn(el.hint))
+        }
+
     /** Inspects visible Play Store listing or search result elements for [requestedApp]. */
     fun analyzeScreen(requestedApp: String, elements: List<ScreenElement>): ScreenDecision {
         val restrictedReason = isPaidOrRestricted(elements)
@@ -62,24 +77,27 @@ object PlayStoreMatcher {
         val wantedTokens = requestedApp.lowercase().split(Regex("\\s+")).filter { it.length >= 2 }
 
         val installingBtn = elements.firstOrNull { el ->
-            el.role == "button" && INSTALLING_RE.containsMatchIn(el.label)
+            el.isEnabled && (el.role == "button" || el.role == "text") && INSTALLING_RE.containsMatchIn(el.label.trim())
         }
         if (installingBtn != null) {
             return ScreenDecision(ButtonState.InstallingOrPending, actionElement = installingBtn)
         }
 
-        // Check if we're already on the matching detail listing screen
         val installBtn = elements.firstOrNull { el ->
-            el.role == "button" && el.label.trim().equals("Install", ignoreCase = true)
+            el.role == "button" && el.isEnabled && INSTALL_BTN_RE.containsMatchIn(el.label.trim())
         }
         val openBtn = elements.firstOrNull { el ->
-            el.role == "button" && el.label.trim().equals("Open", ignoreCase = true)
+            el.role == "button" && el.isEnabled && OPEN_BTN_RE.containsMatchIn(el.label.trim())
         }
         val updateBtn = elements.firstOrNull { el ->
-            el.role == "button" && el.label.trim().equals("Update", ignoreCase = true)
+            el.role == "button" && el.isEnabled && UPDATE_BTN_RE.containsMatchIn(el.label.trim())
+        }
+        val hasInstalledBadge = elements.any { el ->
+            INSTALLED_BADGE_RE.containsMatchIn(el.label.trim())
         }
 
-        val listingMatch = findMatchingListingElement(wantedCompact, wantedTokens, elements)
+        val scoredListings = rankMatchingListings(wantedCompact, wantedTokens, elements)
+        val listingMatch = scoredListings.firstOrNull()?.first
 
         if (installBtn != null) {
             return if (listingMatch != null || elements.any { normalize(it.label) == wantedCompact }) {
@@ -92,29 +110,58 @@ object PlayStoreMatcher {
                 )
             }
         }
-        if (openBtn != null && listingMatch != null) {
-            return ScreenDecision(ButtonState.Open, actionElement = openBtn, matchedListingElement = listingMatch)
+        if (openBtn != null && (listingMatch != null || hasInstalledBadge)) {
+            return ScreenDecision(
+                buttonState = ButtonState.Open,
+                actionElement = openBtn,
+                matchedListingElement = listingMatch,
+                isVerifiedInstalledUi = hasInstalledBadge || listingMatch != null,
+            )
         }
-        if (updateBtn != null && listingMatch != null) {
-            return ScreenDecision(ButtonState.Update, actionElement = updateBtn, matchedListingElement = listingMatch)
+        if (updateBtn != null && (listingMatch != null || hasInstalledBadge)) {
+            return ScreenDecision(
+                buttonState = ButtonState.Update,
+                actionElement = updateBtn,
+                matchedListingElement = listingMatch,
+                isVerifiedInstalledUi = true,
+            )
         }
 
-        // On search results list: pick clickable card matching requested app name
+        // On search results list: check if ambiguous top candidates have identical confidence
+        if (scoredListings.size > 1 && scoredListings[0].second == scoredListings[1].second) {
+            val topScore = scoredListings[0].second
+            val tied = scoredListings.filter { it.second == topScore }.map { it.first }
+            return ScreenDecision(
+                buttonState = ButtonState.None,
+                matchedListingElement = listingMatch,
+                ambiguousListings = tied,
+                reason = "Multiple Play Store results match \"$requestedApp\".",
+            )
+        }
+
         if (listingMatch != null) {
             return ScreenDecision(ButtonState.None, matchedListingElement = listingMatch)
         }
         return ScreenDecision(ButtonState.None, reason = "No matching result for \"$requestedApp\" is visible yet.")
     }
 
-    private fun findMatchingListingElement(
+    private fun rankMatchingListings(
         wantedCompact: String,
         wantedTokens: List<String>,
         elements: List<ScreenElement>,
-    ): ScreenElement? {
-        if (wantedCompact.isEmpty()) return null
-        val scored = elements.mapNotNull { el ->
+    ): List<Pair<ScreenElement, Int>> {
+        if (wantedCompact.isEmpty()) return emptyList()
+        return elements.mapNotNull { el ->
             val lbl = el.label.trim()
-            if (lbl.isEmpty() || lbl.equals("Install", ignoreCase = true) || lbl.equals("Search", ignoreCase = true)) {
+            if (lbl.isEmpty() ||
+                INSTALL_BTN_RE.matches(lbl) ||
+                OPEN_BTN_RE.matches(lbl) ||
+                UPDATE_BTN_RE.matches(lbl) ||
+                INSTALLED_BADGE_RE.matches(lbl) ||
+                SEARCH_BAR_RE.containsMatchIn(lbl) ||
+                lbl.equals("Search", ignoreCase = true) ||
+                el.role == "field"
+            ) {
                 return@mapNotNull null
             }
             val comp = normalize(lbl)
@@ -128,7 +175,6 @@ object PlayStoreMatcher {
             if (score > 0 && el.role == "button") score += 10
             if (score > 0) el to score else null
         }.sortedByDescending { it.second }
-        return scored.firstOrNull()?.first
     }
 }
 
@@ -208,6 +254,7 @@ object PlayStoreTools {
             }
             var clickedListing = false
             var tappedInstall = false
+            var typedSearch = false
 
             repeat(POLL_STEPS) {
                 delay(STEP_DELAY_MS)
@@ -229,7 +276,6 @@ object PlayStoreTools {
                         }
                     }
                     PlayStoreMatcher.ButtonState.InstallingOrPending -> {
-                        // Check if installation already finished in PackageManager
                         val newlyAdded = findNewlyInstalledApp(host, appName, knownPackagesBefore)
                         if (newlyAdded != null) {
                             return "Verified: ${newlyAdded.label} (${newlyAdded.packageName}) finished installing from Google Play Store."
@@ -255,11 +301,33 @@ object PlayStoreTools {
                         return "\"$appName\" is already on this phone with an Update available in Google Play Store."
                     }
                     PlayStoreMatcher.ButtonState.None -> {
+                        if (decision.ambiguousListings.size > 1) {
+                            val options = decision.ambiguousListings.take(3).joinToString(", ") { it.label }
+                            return "Multiple Play Store listings match \"$appName\" ($options). Ask the user which one to open."
+                        }
                         if (!clickedListing && decision.matchedListingElement != null) {
                             val node = service.node(decision.matchedListingElement.number)
                             if (node != null && service.click(node)) {
                                 clickedListing = true
                                 Diag.i("playstore: opened listing ${decision.matchedListingElement.label}")
+                            }
+                        } else if (!typedSearch) {
+                            val searchEl = PlayStoreMatcher.findSearchInput(snap.elements)
+                            val searchNode = searchEl?.number?.let(service::node)
+                            if (searchNode != null) {
+                                if (searchNode.isEditable) {
+                                    if (service.type(searchNode, appName)) {
+                                        typedSearch = true
+                                        Diag.i("playstore: typed query $appName")
+                                    }
+                                } else if (service.click(searchNode)) {
+                                    delay(500)
+                                    service.focusedField()?.let { field ->
+                                        service.type(field, appName)
+                                        typedSearch = true
+                                        Diag.i("playstore: opened search & typed $appName")
+                                    }
+                                }
                             }
                         }
                     }

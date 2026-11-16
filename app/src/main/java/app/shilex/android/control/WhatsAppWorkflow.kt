@@ -163,7 +163,7 @@ object WhatsAppCallMatcher {
  * authorized WhatsApp automation cleanly via Accessibility, checking outcomes honestly.
  */
 object WhatsAppWorkflow {
-    private val WHATSAPP_PACKAGES = setOf("com.whatsapp", "com.whatsapp.w4b")
+    val WHATSAPP_PACKAGES = setOf("com.whatsapp", "com.whatsapp.w4b")
 
     /**
      * Completes sending after WhatsApp opens to the chat draft.

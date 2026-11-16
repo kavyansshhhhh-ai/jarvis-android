@@ -32,6 +32,13 @@ class ControlService : AccessibilityService() {
         val role: String,
         val packageName: String,
         val bounds: Rect,
+        val isEnabled: Boolean = true,
+        val isSelected: Boolean = false,
+        val isChecked: Boolean = false,
+        val isFocused: Boolean = false,
+        val isEditable: Boolean = false,
+        val hint: String = "",
+        val className: String = "",
     )
 
     sealed interface ScreenshotCapture {
@@ -71,6 +78,8 @@ class ControlService : AccessibilityService() {
         val meta: Map<Int, NodeMeta> = emptyMap(),
         val signature: String = "",
         val allowPlayStore: Boolean = false,
+        val screenWidthPx: Int = 0,
+        val screenHeightPx: Int = 0,
     ) {
         val blocked get() = ControlRules.blocked(packageName, allowPlayStoreAutomation = allowPlayStore)
         val upiApp get() = ControlRules.isSupportedUpiApp(packageName)
@@ -120,17 +129,20 @@ class ControlService : AccessibilityService() {
         val label = runCatching {
             packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
         }.getOrDefault(pkg)
+        val dm = runCatching { resources.displayMetrics }.getOrNull()
+        val screenW = dm?.widthPixels ?: 0
+        val screenH = dm?.heightPixels ?: 0
         if (ControlRules.blocked(pkg, allowPlayStoreAutomation = allowPlayStore)) {
             lastNodes = emptyMap()
             lastMeta = emptyMap()
             lastElementsList = emptyList()
-            return Snapshot(pkg, label, emptyList(), false, allowPlayStore = allowPlayStore)
+            return Snapshot(pkg, label, emptyList(), false, allowPlayStore = allowPlayStore, screenWidthPx = screenW, screenHeightPx = screenH)
         }
         if (isNodeDataSensitive(root)) {
             lastNodes = emptyMap()
             lastMeta = emptyMap()
             lastElementsList = emptyList()
-            return Snapshot(pkg, label, emptyList(), false, restrictedBySystem = true, allowPlayStore = allowPlayStore)
+            return Snapshot(pkg, label, emptyList(), false, restrictedBySystem = true, allowPlayStore = allowPlayStore, screenWidthPx = screenW, screenHeightPx = screenH)
         }
         val elements = mutableListOf<ScreenElement>()
         val nodes = mutableMapOf<Int, AccessibilityNodeInfo>()
@@ -147,6 +159,7 @@ class ControlService : AccessibilityService() {
             val rawViewId = node.viewIdResourceName?.substringAfterLast('/').orEmpty()
             val cleanViewId = cleanViewIdLabel(rawViewId)
             val own = ownLabel(node)
+            val hint = nonBlank(node.hintText)
             if (node.isPassword || ControlRules.isSensitiveAuthCue(own, rawViewId, node.isPassword)) {
                 sensitiveAuth = true
                 return
@@ -159,25 +172,41 @@ class ControlService : AccessibilityService() {
                 else -> false
             }
             if (include && elements.size < ScreenText.MAX_ELEMENTS) {
-                val text = own.ifEmpty { childText(node) }.ifEmpty { cleanViewId }
+                val text = own.ifEmpty { childText(node) }.ifEmpty { hint }.ifEmpty { cleanViewId }
                 if (text.isNotEmpty() || node.isEditable) {
                     val number = elements.size + 1
                     val resolvedRole = role(node)
-                    val value = if (node.isEditable && !ControlRules.isSensitiveCredentialField(text, rawViewId, node.isPassword)) {
-                        node.text?.toString().orEmpty()
+                    val showingHint = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && node.isShowingHintText
+                    val value = if (node.isEditable && !showingHint && !ControlRules.isSensitiveCredentialField(text, rawViewId, node.isPassword)) {
+                        nonBlank(node.text)
                     } else {
                         ""
                     }
                     val bounds = Rect().also(node::getBoundsInScreen)
-                    elements += ScreenElement(number, resolvedRole, text, value)
+                    elements += ScreenElement(
+                        number = number,
+                        role = resolvedRole,
+                        label = text.ifEmpty { "Text field" },
+                        value = value,
+                        isEnabled = node.isEnabled,
+                        isSelected = node.isSelected,
+                        hint = hint,
+                    )
                     nodes[number] = node
                     metaMap[number] = NodeMeta(
                         number = number,
                         viewId = rawViewId,
-                        label = text,
+                        label = text.ifEmpty { "Text field" },
                         role = resolvedRole,
                         packageName = node.packageName?.toString().orEmpty(),
                         bounds = bounds,
+                        isEnabled = node.isEnabled,
+                        isSelected = node.isSelected,
+                        isChecked = node.isChecked,
+                        isFocused = node.isFocused,
+                        isEditable = node.isEditable,
+                        hint = hint,
+                        className = node.className?.toString().orEmpty(),
                     )
                 }
             }
@@ -191,7 +220,7 @@ class ControlService : AccessibilityService() {
             lastNodes = emptyMap()
             lastMeta = emptyMap()
             lastElementsList = emptyList()
-            return Snapshot(pkg, label, emptyList(), false, sensitiveAuth = true, allowPlayStore = allowPlayStore)
+            return Snapshot(pkg, label, emptyList(), false, sensitiveAuth = true, allowPlayStore = allowPlayStore, screenWidthPx = screenW, screenHeightPx = screenH)
         }
         lastNodes = nodes
         lastMeta = metaMap
@@ -206,6 +235,8 @@ class ControlService : AccessibilityService() {
             meta = metaMap,
             signature = sig,
             allowPlayStore = allowPlayStore,
+            screenWidthPx = screenW,
+            screenHeightPx = screenH,
         )
     }
 
@@ -233,12 +264,15 @@ class ControlService : AccessibilityService() {
         val candidateRect = Rect()
         fun score(n: AccessibilityNodeInfo): Int {
             val viewId = n.viewIdResourceName?.substringAfterLast('/').orEmpty()
-            val lbl = ownLabel(n).ifEmpty { childText(n) }.ifEmpty { cleanViewIdLabel(viewId) }
+            val lbl = ownLabel(n).ifEmpty { childText(n) }.ifEmpty { nonBlank(n.hintText) }.ifEmpty { cleanViewIdLabel(viewId) }
             val r = role(n)
             var s = 0
             if (meta.viewId.isNotEmpty() && viewId == meta.viewId) s += 4
             if (meta.label.isNotEmpty() && lbl.equals(meta.label, ignoreCase = true)) s += 3
             if (r == meta.role) s += 1
+            if (n.isEditable == meta.isEditable) s += 1
+            if (n.isSelected == meta.isSelected) s += 1
+            if (!n.isEnabled && meta.isEnabled) s -= 2
             n.getBoundsInScreen(candidateRect)
             if (!meta.bounds.isEmpty && Rect.intersects(meta.bounds, candidateRect)) s += 2
             return s
@@ -246,7 +280,7 @@ class ControlService : AccessibilityService() {
         fun visit(n: AccessibilityNodeInfo) {
             if (!n.isVisibleToUser || isNodeDataSensitive(n)) return
             val s = score(n)
-            if (s > bestScore && s >= 4) {
+            if (s > bestScore && s >= 5) {
                 bestScore = s
                 best = n
             }
@@ -401,8 +435,18 @@ class ControlService : AccessibilityService() {
         return dispatchGesture(gesture, null, null)
     }
 
-    private fun ownLabel(node: AccessibilityNodeInfo): String =
-        (node.text ?: node.contentDescription ?: node.hintText)?.toString()?.trim().orEmpty()
+    private fun nonBlank(cs: CharSequence?): String = cs?.toString()?.trim().orEmpty()
+
+    private fun ownLabel(node: AccessibilityNodeInfo): String {
+        val txt = nonBlank(node.text)
+        val desc = nonBlank(node.contentDescription)
+        val hint = nonBlank(node.hintText)
+        return if (node.isEditable) {
+            hint.ifEmpty { desc }.ifEmpty { txt }
+        } else {
+            txt.ifEmpty { desc }.ifEmpty { hint }
+        }
+    }
 
     private fun cleanViewIdLabel(viewId: String): String = viewId
         .substringAfterLast('/')

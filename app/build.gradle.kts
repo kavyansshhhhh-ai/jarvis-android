@@ -52,6 +52,11 @@ android {
     buildFeatures {
         compose = true
     }
+    packaging {
+        jniLibs {
+            pickFirsts += listOf("**/libonnxruntime.so", "**/libc++_shared.so")
+        }
+    }
     // SpeexDSP's echo canceller (BSD), built from src/main/cpp.
     ndkVersion = "27.0.12077973"
     externalNativeBuild {
@@ -80,6 +85,8 @@ dependencies {
     implementation(libs.onnxruntime.android)
     // Offline speech for local commands (Vosk, Apache 2.0); the model comes from fetchVoskModel.
     implementation(libs.vosk.android)
+    // Offline Hindi neural TTS engine (Sherpa-ONNX + statically linked ONNX Runtime, Apache 2.0).
+    implementation(files("libs/sherpa-onnx-static-link-onnxruntime-1.13.8.aar"))
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     testImplementation(libs.junit)
@@ -94,6 +101,7 @@ val voskSha256 = "20663dcac4d5cb783a579c54d98339344a688e4ec6e1b4a4b059fd1235454c
 val voskSha256Alt = "6d5d50f46ed685a8f19b38e1733618509c3ad90a8641c21c931aae111a4b27e5"
 val voskSha256Alt3 = "9f91adf67276ff748149c474baaf2153049de20f580bf854452f4b0bc22729df"
 val voskAssets = layout.buildDirectory.dir("generated/vosk-assets")
+val ttsAssets = layout.buildDirectory.dir("generated/tts-assets")
 
 val fetchVoskModel by tasks.registering {
     val out = voskAssets.get().asFile
@@ -115,5 +123,22 @@ val fetchVoskModel by tasks.registering {
     }
 }
 
+val fetchOfflineHindiTts by tasks.registering {
+    val out = ttsAssets.get().asFile
+    val scriptFile = rootProject.file("scripts/fetch_hindi_tts.py")
+    outputs.dir(out)
+    doLast {
+        if (out.resolve("voices/.tts-assets-v1.ready").exists()) return@doLast
+        val pb = ProcessBuilder("python3", scriptFile.absolutePath)
+            .directory(rootProject.projectDir)
+            .inheritIO()
+        val exit = pb.start().waitFor()
+        if (exit != 0) {
+            throw GradleException("scripts/fetch_hindi_tts.py failed with exit code $exit")
+        }
+    }
+}
+
 android.sourceSets["main"].assets.srcDir(voskAssets)
-tasks.named("preBuild") { dependsOn(fetchVoskModel) }
+android.sourceSets["main"].assets.srcDir(ttsAssets)
+tasks.named("preBuild") { dependsOn(fetchVoskModel, fetchOfflineHindiTts) }

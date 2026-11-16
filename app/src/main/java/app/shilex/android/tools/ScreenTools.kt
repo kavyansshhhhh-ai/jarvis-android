@@ -6,9 +6,11 @@ import app.shilex.android.Branding
 import app.shilex.android.control.ControlRules
 import app.shilex.android.control.ControlService
 import app.shilex.android.control.InstagramMatcher
+import app.shilex.android.control.ScreenRecovery
 import app.shilex.android.control.ScreenText
 import app.shilex.android.control.ScreenVision
 import app.shilex.android.control.SightAim
+import app.shilex.android.control.WhatsAppWorkflow
 import app.shilex.android.data.AutomationCategory
 import app.shilex.android.data.KeyVault
 import app.shilex.android.data.Settings as AppSettings
@@ -46,15 +48,42 @@ object ScreenTools {
         return service to null
     }
 
+    private fun allowPlayStore(host: ToolHost): Boolean =
+        AppSettings(host.context).isAutomationEnabled(AutomationCategory.PlayStoreNavigation)
+
+    private fun screenContextHints(snap: ControlService.Snapshot): String = buildString {
+        if (snap.packageName == InstagramMatcher.INSTAGRAM_PACKAGE) {
+            val screenState = InstagramMatcher.detectScreen(snap.elements, snap.meta, snap.screenHeightPx)
+            append("Instagram screen: ").append(screenState.name).append('\n')
+            val controls = listOfNotNull(
+                (InstagramMatcher.resolveControl(snap.elements, snap.meta, InstagramMatcher.TargetIntent.Messages, snap.screenHeightPx) as? InstagramMatcher.MatchOutcome.Matched)?.let { "Messages=#${it.element.number}" },
+                (InstagramMatcher.resolveControl(snap.elements, snap.meta, InstagramMatcher.TargetIntent.Composer, snap.screenHeightPx) as? InstagramMatcher.MatchOutcome.Matched)?.let { "Composer=#${it.element.number}" },
+                (InstagramMatcher.resolveControl(snap.elements, snap.meta, InstagramMatcher.TargetIntent.DmSend, snap.screenHeightPx) as? InstagramMatcher.MatchOutcome.Matched)?.let { "DmSend=#${it.element.number}" },
+                (InstagramMatcher.resolveControl(snap.elements, snap.meta, InstagramMatcher.TargetIntent.Search, snap.screenHeightPx) as? InstagramMatcher.MatchOutcome.Matched)?.let { "Search=#${it.element.number}" },
+                (InstagramMatcher.resolveControl(snap.elements, snap.meta, InstagramMatcher.TargetIntent.Reels, snap.screenHeightPx) as? InstagramMatcher.MatchOutcome.Matched)?.let { "Reels=#${it.element.number}" },
+                (InstagramMatcher.resolveControl(snap.elements, snap.meta, InstagramMatcher.TargetIntent.Create, snap.screenHeightPx) as? InstagramMatcher.MatchOutcome.Matched)?.let { "Create=#${it.element.number}" },
+                (InstagramMatcher.resolveControl(snap.elements, snap.meta, InstagramMatcher.TargetIntent.Share, snap.screenHeightPx) as? InstagramMatcher.MatchOutcome.Matched)?.let { "Share=#${it.element.number}" },
+            )
+            if (controls.isNotEmpty()) {
+                append("Detected Instagram controls: ").append(controls.joinToString(", ")).append('\n')
+            }
+        } else if (snap.packageName == ControlRules.PLAY_STORE_PACKAGE) {
+            PlayStoreMatcher.findSearchInput(snap.elements)?.let {
+                append("Play Store Search=#").append(it.number).append('\n')
+            }
+        }
+    }
+
     private suspend fun afterAction(
         service: ControlService,
         did: String,
         beforeSig: String = "",
+        allowPlayStore: Boolean = false,
     ): JSONObject {
         service.overlay.showActive()
         delay(SETTLE_MS)
         val fg = service.foregroundPackage()
-        val snap = service.snapshot() ?: return if (ControlRules.isFinanceApp(fg)) {
+        val snap = service.snapshot(allowPlayStore = allowPlayStore) ?: return if (ControlRules.isFinanceApp(fg)) {
             Results.done(
                 "$did This banking or UPI screen blocked Accessibility inspection for security. " +
                     "Hand control back to the user with hand_to_user and explain why.",
@@ -82,8 +111,9 @@ object ScreenTools {
             else -> "(Screen stayed the same.) "
         }
         val summary = if (snap.financeApp) ControlRules.extractTransactionSummary(snap.elements) else ""
+        val hints = screenContextHints(snap)
         val prefix = if (summary.isNotEmpty()) "$did $transitionNote Summary on screen: $summary\n" else "$did $transitionNote"
-        return Results.done(prefix + "Screen now:\n" + ScreenText.describe(snap.appLabel, snap.elements, snap.more))
+        return Results.done(prefix + hints + "Screen now:\n" + ScreenText.describe(snap.appLabel, snap.elements, snap.more))
     }
 
     private fun appLabel(service: ControlService, pkg: String): String =
@@ -135,8 +165,9 @@ object ScreenTools {
             }
             val (service, problem) = control()
             service ?: return problem!!
+            val allowPs = allowPlayStore(host)
             val fg = service.foregroundPackage()
-            val snap = service.snapshot() ?: return if (ControlRules.isFinanceApp(fg)) {
+            val snap = service.snapshot(allowPlayStore = allowPs) ?: return if (ControlRules.isFinanceApp(fg)) {
                 accessibilityRestricted(appLabel(service, fg))
             } else {
                 Results.failed("no_screen", "The screen couldn't be read.")
@@ -157,19 +188,9 @@ object ScreenTools {
             }
             ActiveTaskContext.updateScreen(snap.appLabel, snap.signature.take(80))
             val summary = if (snap.financeApp) ControlRules.extractTransactionSummary(snap.elements) else ""
-            val igHints = if (snap.packageName == InstagramMatcher.INSTAGRAM_PACKAGE) {
-                val msg = (InstagramMatcher.resolveControl(snap.elements, snap.meta, InstagramMatcher.TargetIntent.Messages) as? InstagramMatcher.MatchOutcome.Matched)?.element?.number
-                val search = (InstagramMatcher.resolveControl(snap.elements, snap.meta, InstagramMatcher.TargetIntent.Search) as? InstagramMatcher.MatchOutcome.Matched)?.element?.number
-                val parts = listOfNotNull(
-                    msg?.let { "Instagram Messages/DM=#$it" },
-                    search?.let { "Instagram Search=#$it" },
-                )
-                if (parts.isNotEmpty()) "Detected Instagram controls: ${parts.joinToString(", ")}\n" else ""
-            } else {
-                ""
-            }
+            val hints = screenContextHints(snap)
             val body = ScreenText.describe(snap.appLabel, snap.elements, snap.more)
-            return Results.done((if (summary.isNotEmpty()) "Summary on screen: $summary\n" else "") + igHints + body)
+            return Results.done((if (summary.isNotEmpty()) "Summary on screen: $summary\n" else "") + hints + body)
         }
     }
 
@@ -247,20 +268,27 @@ object ScreenTools {
             }
             val (service, problem) = control()
             service ?: return problem!!
-            val node = target(service, args) ?: return Results.failed(
+            val allowPs = allowPlayStore(host)
+            val resolved = target(service, args, allowPs) ?: return Results.failed(
                 "not_found",
-                "No confident matching element on screen now. Call ui_read and pick an exact number.",
+                "No confident matching element on screen now. Call ui_read and pick an exact number (or use ui_tap_seen ONLY for unlabeled icons).",
             )
-            node.second?.let { return it }
-            val target = node.first!!
+            resolved.second?.let { return it }
+            val target = resolved.first!!
             val pkg = target.packageName?.toString().orEmpty()
             val name = appLabel(service, pkg)
-            if (ControlRules.blocked(pkg)) return blocked(name)
+            if (ControlRules.blocked(pkg, allowPlayStoreAutomation = allowPs)) return blocked(name)
             if (service.isSensitiveAuthActive()) return sensitiveAuth("authentication screen")
             if (ControlRules.isFinanceApp(pkg) && !host.authorizeFinance(pkg, name)) {
                 return financeDeclined(name)
             }
             val label = service.labelOf(target)
+            if (!target.isEnabled) {
+                return Results.failed(
+                    "disabled",
+                    "\"${ScreenText.shorten(label.ifEmpty { "That control" })}\" is currently disabled on screen. Refresh with ui_read or complete the prerequisite field first.",
+                )
+            }
             val viewId = target.viewIdResourceName.orEmpty()
             if (ControlRules.isCredentialAction(label, viewId, target.isPassword)) {
                 return sensitiveAuth(ScreenText.shorten(label.ifEmpty { "credential control" }))
@@ -268,9 +296,12 @@ object ScreenTools {
             val summary = if (ControlRules.isFinanceApp(pkg)) ControlRules.extractTransactionSummary(service.lastElements()) else ""
             val risk = ControlRules.clickRisk(label, viewId, pkg)
             if (risk == ControlRules.Risk.Money) return payment(label, summary)
+            val settings = AppSettings(host.context)
             val skipOutgoingPrompt = risk == ControlRules.Risk.Outgoing &&
                 !ControlRules.isFinanceApp(pkg) &&
-                AppSettings(host.context).isAutomationEnabled(AutomationCategory.ScreenInteraction)
+                settings.isAutomationEnabled(AutomationCategory.ScreenInteraction) &&
+                (pkg != ControlRules.PLAY_STORE_PACKAGE || allowPs) &&
+                (pkg !in WhatsAppWorkflow.WHATSAPP_PACKAGES || settings.isAutomationEnabled(AutomationCategory.WhatsAppMessages))
             if (risk != ControlRules.Risk.Safe && !skipOutgoingPrompt) {
                 val shortLabel = ScreenText.shorten(label.ifEmpty { "this button" })
                 val what = if (summary.isNotEmpty()) "Tap \"$shortLabel\" ($summary)" else "Tap \"$shortLabel\""
@@ -278,8 +309,19 @@ object ScreenTools {
                     return Results.failed("cancelled", "The user didn't allow it. Don't try again unless they ask.")
                 }
             }
-            val beforeSig = service.snapshot()?.signature.orEmpty()
-            val refreshedNode = service.node(args.optInt("number", 0).takeIf { it > 0 } ?: 0) ?: target
+            val beforeSnap = service.snapshot(allowPlayStore = allowPs)
+            val beforeSig = beforeSnap?.signature.orEmpty()
+            if (beforeSnap != null && beforeSnap.packageName != pkg) {
+                return Results.failed(
+                    "wrong_screen",
+                    "Screen switched to ${beforeSnap.appLabel} before tapping. Read the screen again and continue safely.",
+                )
+            }
+            val explicitNumber = args.optInt("number", 0)
+            val refreshedNode = (if (explicitNumber > 0) service.node(explicitNumber) else null) ?: target
+            if (!refreshedNode.isEnabled) {
+                return Results.failed("disabled", "\"${ScreenText.shorten(label)}\" became disabled before tapping.")
+            }
             if (!service.click(refreshedNode)) {
                 return if (ControlRules.isFinanceApp(pkg)) {
                     accessibilityRestricted(name)
@@ -287,15 +329,19 @@ object ScreenTools {
                     Results.failed("tap_failed", "The tap didn't go through.")
                 }
             }
-            return afterAction(service, "Tapped \"${ScreenText.shorten(label)}\".", beforeSig = beforeSig)
+            return afterAction(service, "Tapped \"${ScreenText.shorten(label)}\".", beforeSig = beforeSig, allowPlayStore = allowPs)
         }
 
-        private fun target(service: ControlService, args: JSONObject): Pair<AccessibilityNodeInfo?, JSONObject?>? {
+        private suspend fun target(
+            service: ControlService,
+            args: JSONObject,
+            allowPs: Boolean,
+        ): Pair<AccessibilityNodeInfo?, JSONObject?>? {
             val number = args.optInt("number", 0)
             if (number > 0) return service.node(number)?.let { it to null }
             val label = args.text("label")
             val fg = service.foregroundPackage()
-            val snap = service.snapshot() ?: return if (ControlRules.isFinanceApp(fg)) {
+            var snap = service.snapshot(allowPlayStore = allowPs) ?: return if (ControlRules.isFinanceApp(fg)) {
                 null to accessibilityRestricted(appLabel(service, fg))
             } else {
                 null
@@ -308,7 +354,18 @@ object ScreenTools {
             if (snap.packageName == InstagramMatcher.INSTAGRAM_PACKAGE) {
                 val igIntent = InstagramMatcher.inferIntent(label)
                 if (igIntent != null) {
-                    when (val res = InstagramMatcher.resolveControl(snap.elements, snap.meta, igIntent)) {
+                    val recovery = ScreenRecovery.evaluateInstagramAction(igIntent, snap.elements, snap.meta, snap.screenHeightPx)
+                    if (recovery is ScreenRecovery.RecoveryDecision.RecoverBackAndRecheck) {
+                        service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                        delay(SETTLE_MS)
+                        snap = service.snapshot(allowPlayStore = allowPs) ?: return null
+                        if (snap.packageName != InstagramMatcher.INSTAGRAM_PACKAGE) {
+                            return null to Results.failed("wrong_screen", "Left Instagram while recovering screen; call ui_read to re-orient.")
+                        }
+                    } else if (recovery is ScreenRecovery.RecoveryDecision.AskUser) {
+                        return null to Results.failed("wrong_screen", recovery.reason)
+                    }
+                    when (val res = InstagramMatcher.resolveControl(snap.elements, snap.meta, igIntent, snap.screenHeightPx)) {
                         is InstagramMatcher.MatchOutcome.Matched -> return service.node(res.element.number)?.let { it to null }
                         is InstagramMatcher.MatchOutcome.Ambiguous -> return null to Results.ask(
                             "Multiple Instagram controls look like \"$label\". Ask which one.",
@@ -316,6 +373,14 @@ object ScreenTools {
                         )
                         InstagramMatcher.MatchOutcome.NotFound -> Unit
                     }
+                }
+                when (val recipient = InstagramMatcher.findRecipientMatch(snap.elements, snap.meta, label)) {
+                    is InstagramMatcher.MatchOutcome.Matched -> return service.node(recipient.element.number)?.let { it to null }
+                    is InstagramMatcher.MatchOutcome.Ambiguous -> return null to Results.ask(
+                        "Multiple Instagram chats or accounts match \"$label\". Ask which one.",
+                        recipient.candidates.take(5).map { "${it.number}. ${it.label}" },
+                    )
+                    InstagramMatcher.MatchOutcome.NotFound -> Unit
                 }
             }
             val matches = ScreenText.find(snap.elements, label)
@@ -346,14 +411,30 @@ object ScreenTools {
             }
             val (service, problem) = control()
             service ?: return problem!!
+            val allowPs = allowPlayStore(host)
             if (service.isSensitiveAuthActive()) return sensitiveAuth("authentication screen")
             val number = args.optInt("number", 0)
-            val field = (if (number > 0) service.node(number) else service.focusedField())
-                ?.takeIf { it.isEditable }
-                ?: return Results.failed("no_field", "No text field selected. Call ui_read and give the field's number.")
+            var field = (if (number > 0) service.node(number) else service.focusedField())
+                ?.takeIf { it.isEditable && it.isEnabled }
+            if (field == null && number == 0) {
+                // On Instagram DM thread, resolve composer ("Message...") explicitly instead of typing blindly
+                val snap = service.snapshot(allowPlayStore = allowPs)
+                if (snap != null && snap.packageName == InstagramMatcher.INSTAGRAM_PACKAGE) {
+                    val igScreen = InstagramMatcher.detectScreen(snap.elements, snap.meta, snap.screenHeightPx)
+                    if (igScreen == InstagramMatcher.InstagramScreenState.DirectThread) {
+                        val comp = InstagramMatcher.resolveControl(snap.elements, snap.meta, InstagramMatcher.TargetIntent.Composer, snap.screenHeightPx)
+                        if (comp is InstagramMatcher.MatchOutcome.Matched) {
+                            field = service.node(comp.element.number)?.takeIf { it.isEditable && it.isEnabled }
+                        }
+                    } else if (igScreen == InstagramMatcher.InstagramScreenState.Reels || igScreen == InstagramMatcher.InstagramScreenState.ShareSheet) {
+                        return Results.failed("wrong_screen", "Instagram is on ${igScreen.name}, not a chat or search input. Open the right chat first.")
+                    }
+                }
+            }
+            field ?: return Results.failed("no_field", "No editable text field selected. Call ui_read and give the field's number.")
             val pkg = field.packageName?.toString().orEmpty()
             val name = appLabel(service, pkg)
-            if (ControlRules.blocked(pkg)) return blocked(name)
+            if (ControlRules.blocked(pkg, allowPlayStoreAutomation = allowPs)) return blocked(name)
             if (ControlRules.isFinanceApp(pkg) && !host.authorizeFinance(pkg, name)) {
                 return financeDeclined(name)
             }
@@ -362,6 +443,7 @@ object ScreenTools {
             if (ControlRules.isCredentialAction(label, viewId, field.isPassword)) {
                 return sensitiveAuth(ScreenText.shorten(label.ifEmpty { "credential field" }))
             }
+            val beforeSig = service.snapshot(allowPlayStore = allowPs)?.signature.orEmpty()
             if (!service.type(field, args.text("text"))) {
                 return if (ControlRules.isFinanceApp(pkg)) {
                     accessibilityRestricted(name)
@@ -369,7 +451,7 @@ object ScreenTools {
                     Results.failed("type_failed", "Typing didn't work in that field.")
                 }
             }
-            return afterAction(service, "Typed it.")
+            return afterAction(service, "Typed it.", beforeSig = beforeSig, allowPlayStore = allowPs)
         }
     }
 
@@ -456,8 +538,9 @@ object ScreenTools {
             if (!service.overlay.handover(step)) {
                 return Results.failed("stopped", "The user stopped or didn't finish. Ask what they'd like; don't carry on by yourself.")
             }
+            val allowPs = allowPlayStore(host)
             val pkg = service.foregroundPackage()
-            if (pkg == host.context.packageName || ControlRules.blocked(pkg)) {
+            if (pkg == host.context.packageName || ControlRules.blocked(pkg, allowPlayStoreAutomation = allowPs)) {
                 return Results.done("The user tapped Done. The screen now is one ${Branding.ASSISTANT_NAME} doesn't read; ask what's next if unsure.")
             }
             if (service.isSensitiveAuthActive()) {
@@ -466,7 +549,7 @@ object ScreenTools {
                         "Ask them to finish or cancel first before checking the result.",
                 )
             }
-            return afterAction(service, "The user tapped Done.")
+            return afterAction(service, "The user tapped Done.", allowPlayStore = allowPs)
         }
     }
 
@@ -485,16 +568,17 @@ object ScreenTools {
             }
             val (service, problem) = control()
             service ?: return problem!!
+            val allowPs = allowPlayStore(host)
             val pkg = service.foregroundPackage()
             val name = appLabel(service, pkg)
-            if (ControlRules.blocked(pkg)) return blocked(name)
+            if (ControlRules.blocked(pkg, allowPlayStoreAutomation = allowPs)) return blocked(name)
             if (service.isSensitiveAuthActive()) return sensitiveAuth("authentication screen")
             if (ControlRules.isFinanceApp(pkg) && !host.authorizeFinance(pkg, name)) {
                 return financeDeclined(name)
             }
-            val beforeSig = service.snapshot()?.signature.orEmpty()
+            val beforeSig = service.snapshot(allowPlayStore = allowPs)?.signature.orEmpty()
             if (!service.scroll(down = args.text("direction") != "up")) return Results.failed("no_scroll", "Nothing to scroll here.")
-            return afterAction(service, "Scrolled.", beforeSig = beforeSig)
+            return afterAction(service, "Scrolled.", beforeSig = beforeSig, allowPlayStore = allowPs)
         }
     }
 
@@ -510,9 +594,10 @@ object ScreenTools {
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
             val (service, problem) = control()
             service ?: return problem!!
+            val allowPs = allowPlayStore(host)
             val action = KEYS[args.text("key")] ?: return Results.failed("bad_key", "Use back, home, recents, notifications or quick_settings.")
             if (!service.performGlobalAction(action)) return Results.failed("key_failed", "The phone didn't take that key.")
-            return afterAction(service, "Pressed ${args.text("key")}.")
+            return afterAction(service, "Pressed ${args.text("key")}.", allowPlayStore = allowPs)
         }
 
         private val KEYS = mapOf(
