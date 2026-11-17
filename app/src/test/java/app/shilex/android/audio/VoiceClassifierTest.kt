@@ -124,11 +124,11 @@ class VoiceClassifierTest {
     @Test
     fun bundledHindiVoicesAreGenuineDistinctAndOfflineCapable() {
         val voices = BundledHindiVoices.ALL
-        assertEquals(7, voices.size)
+        assertEquals(10, voices.size)
 
-        // 3 distinct Female voices: Priyamvada (Piper/AI4Bharat), hf_alpha & hf_beta (Kokoro-82M)
+        // 5 distinct Female voices: Priyamvada (Piper), hf_alpha & hf_beta (Kokoro-82M), F1 & F2 (Supertonic-3)
         val female = voices.filter { it.gender == VoiceGender.Female }
-        assertEquals(3, female.size)
+        assertEquals(5, female.size)
         assertEquals("bundled_hi_female_priyamvada", female[0].id)
         assertEquals("Hindi Female 1", female[0].displayName)
         assertEquals(BundledEngineKind.PiperVits, female[0].engineKind)
@@ -150,9 +150,25 @@ class VoiceClassifierTest {
         assertEquals(BundledEngineKind.KokoroMultiLang, female[2].engineKind)
         assertEquals(32, female[2].speakerId)
 
-        // 4 distinct Male voices: Pratham (Piper), Rohan (Piper), hm_omega & hm_psi (Kokoro-82M)
+        assertEquals("bundled_hi_female_supertonic_f1", female[3].id)
+        assertEquals("Hindi Female 4", female[3].displayName)
+        assertEquals(BundledEngineKind.Supertonic, female[3].engineKind)
+        assertEquals(0, female[3].speakerId)
+        assertEquals(44100, female[3].sampleRate)
+        assertEquals("MIT", female[3].licenseNotice)
+        assertTrue(female[3].durationPredictorAssetPath.endsWith(".onnx"))
+        assertTrue(female[3].voiceStyleAssetPath.endsWith("voice.bin"))
+
+        assertEquals("bundled_hi_female_supertonic_f2", female[4].id)
+        assertEquals("Hindi Female 5", female[4].displayName)
+        assertEquals(BundledEngineKind.Supertonic, female[4].engineKind)
+        assertEquals(1, female[4].speakerId)
+        assertEquals(44100, female[4].sampleRate)
+        assertEquals("MIT", female[4].licenseNotice)
+
+        // 5 distinct Male voices: Pratham (Piper), Rohan (Piper), hm_omega & hm_psi (Kokoro-82M), M1 (Supertonic-3)
         val male = voices.filter { it.gender == VoiceGender.Male }
-        assertEquals(4, male.size)
+        assertEquals(5, male.size)
         assertEquals("bundled_hi_male_pratham", male[0].id)
         assertEquals("Hindi Male 1", male[0].displayName)
         assertEquals(BundledEngineKind.PiperVits, male[0].engineKind)
@@ -171,10 +187,22 @@ class VoiceClassifierTest {
         assertEquals(BundledEngineKind.KokoroMultiLang, male[3].engineKind)
         assertEquals(34, male[3].speakerId)
 
-        assertEquals(7, voices.map { it.id }.toSet().size)
+        assertEquals("bundled_hi_male_supertonic_m1", male[4].id)
+        assertEquals("Hindi Male 5", male[4].displayName)
+        assertEquals(BundledEngineKind.Supertonic, male[4].engineKind)
+        assertEquals(5, male[4].speakerId)
+        assertEquals(44100, male[4].sampleRate)
+        assertEquals("MIT", male[4].licenseNotice)
+
+        assertEquals(10, voices.map { it.id }.toSet().size)
         assertTrue(voices.all { it.locale == Locale("hi", "IN") })
         assertTrue(voices.all { it.toTtsVoiceInfo().isOfflineCapable })
-        assertTrue(voices.all { it.modelAssetPath.endsWith(".onnx") && it.tokensAssetPath.endsWith("tokens.txt") })
+        assertTrue(
+            voices.all {
+                it.modelAssetPath.endsWith(".onnx") &&
+                    (it.tokensAssetPath.endsWith("tokens.txt") || it.tokensAssetPath.endsWith(".bin"))
+            },
+        )
     }
 
     @Test
@@ -182,19 +210,24 @@ class VoiceClassifierTest {
         val bundled = BundledHindiVoices.ALL.map { it.toTtsVoiceInfo() }
         val catalog = VoiceClassifier.buildHindiCatalog(emptyList(), bundled)
 
-        assertEquals(3, catalog.femaleVoices.size)
+        assertEquals(5, catalog.femaleVoices.size)
         assertEquals("Hindi Female 1", catalog.femaleVoices[0].displayName)
         assertEquals("Hindi Female 2", catalog.femaleVoices[1].displayName)
         assertEquals("Hindi Female 3", catalog.femaleVoices[2].displayName)
+        assertEquals("Hindi Female 4", catalog.femaleVoices[3].displayName)
+        assertEquals("Hindi Female 5", catalog.femaleVoices[4].displayName)
         assertEquals("bundled_hi_female_priyamvada", catalog.femaleVoices[0].id)
+        assertEquals("bundled_hi_female_supertonic_f2", catalog.femaleVoices[4].id)
         assertTrue(catalog.femaleVoices.all { it.isBundled && it.isOfflineCapable })
 
-        assertEquals(4, catalog.maleVoices.size)
+        assertEquals(5, catalog.maleVoices.size)
         assertEquals("Hindi Male 1", catalog.maleVoices[0].displayName)
         assertEquals("Hindi Male 2", catalog.maleVoices[1].displayName)
         assertEquals("Hindi Male 3", catalog.maleVoices[2].displayName)
         assertEquals("Hindi Male 4", catalog.maleVoices[3].displayName)
+        assertEquals("Hindi Male 5", catalog.maleVoices[4].displayName)
         assertEquals("bundled_hi_male_pratham", catalog.maleVoices[0].id)
+        assertEquals("bundled_hi_male_supertonic_m1", catalog.maleVoices[4].id)
         assertTrue(catalog.maleVoices.all { it.isBundled && it.isOfflineCapable })
 
         // Verify 5-per-category cap holds when combined with system voices, keeping bundled first
@@ -228,14 +261,18 @@ class VoiceClassifierTest {
             VoiceClassifier.resolveEffectiveVoiceId(null, catalog, preferMale = true),
         )
 
-        // Preserves user's saved selection exactly
+        // Preserves user's saved selection exactly (including Supertonic voices)
         assertEquals(
             "bundled_hi_male_kokoro_psi",
             VoiceClassifier.resolveEffectiveVoiceId("bundled_hi_male_kokoro_psi", catalog, preferMale = false),
         )
         assertEquals(
-            "bundled_hi_female_kokoro_beta",
-            VoiceClassifier.resolveEffectiveVoiceId("bundled_hi_female_kokoro_beta", catalog, preferMale = true),
+            "bundled_hi_female_supertonic_f2",
+            VoiceClassifier.resolveEffectiveVoiceId("bundled_hi_female_supertonic_f2", catalog, preferMale = true),
+        )
+        assertEquals(
+            "bundled_hi_male_supertonic_m1",
+            VoiceClassifier.resolveEffectiveVoiceId("bundled_hi_male_supertonic_m1", catalog, preferMale = false),
         )
 
         // Missing/removed voice falls back cleanly to gender preference
@@ -244,5 +281,28 @@ class VoiceClassifierTest {
             VoiceClassifier.resolveEffectiveVoiceId("removed_voice_id", catalog, preferMale = true),
         )
     }
+
+    @Test
+    fun offlineEnginePcmConversionSanitizesNonFiniteAndSplitsHindiSentences() {
+        val converted = OfflineHindiTtsEngine.floatsToPcm16(
+            samples = floatArrayOf(0f, 0.5f, -1.5f, Float.NaN, Float.POSITIVE_INFINITY),
+            sampleRate = 44100,
+        )
+        assertEquals(10, converted.pcm16.size)
+        assertEquals(44100, converted.sampleRate)
+        assertEquals(1.0f, converted.rawPeak, 1e-4f)
+
+        val silent = OfflineHindiTtsEngine.floatsToPcm16(
+            samples = floatArrayOf(0f, Float.NaN),
+            sampleRate = 22050,
+        )
+        assertEquals(0f, silent.rawPeak, 1e-6f)
+
+        val parts = OfflineHindiTtsEngine.splitSentencesForLowLatency(
+            "नमस्ते! मैं जार्विस हूँ। बताइए, मैं आपकी क्या मदद कर सकता हूँ?",
+        )
+        assertEquals(3, parts.size)
+    }
 }
+
 

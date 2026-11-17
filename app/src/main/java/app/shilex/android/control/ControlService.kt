@@ -316,12 +316,18 @@ class ControlService : AccessibilityService() {
         return tap(bounds.exactCenterX(), bounds.exactCenterY())
     }
 
-    fun type(node: AccessibilityNodeInfo, text: String): Boolean {
+    fun type(node: AccessibilityNodeInfo, text: String, submitIme: Boolean = false): Boolean {
         node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
         val args = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         }
-        return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        val typed = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        if (typed && submitIme && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+            }
+        }
+        return typed
     }
 
     fun focusedField(): AccessibilityNodeInfo? =

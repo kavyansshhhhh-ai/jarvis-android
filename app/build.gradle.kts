@@ -128,7 +128,7 @@ val fetchOfflineHindiTts by tasks.registering {
     val scriptFile = rootProject.file("scripts/fetch_hindi_tts.py")
     outputs.dir(out)
     doLast {
-        if (out.resolve("voices/.tts-assets-v1.ready").exists()) return@doLast
+        if (out.resolve("voices/.tts-assets-v2.ready").exists()) return@doLast
         val pb = ProcessBuilder("python3", scriptFile.absolutePath)
             .directory(rootProject.projectDir)
             .inheritIO()

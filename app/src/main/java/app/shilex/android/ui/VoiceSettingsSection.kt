@@ -36,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -100,6 +101,8 @@ fun JarvisVoiceSubScreen(
         assistant.refreshTtsVoices()
         rawSelectedVoiceId = assistant.ttsVoiceId
         genderFilter = assistant.ttsGenderFilter
+        speechRate = assistant.ttsSpeechRate
+        pitch = assistant.ttsPitch
         onPauseOrDispose {
             speaker.stopPreview()
         }
@@ -112,6 +115,11 @@ fun JarvisVoiceSubScreen(
     }
 
     val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    LaunchedEffect(voiceError) {
+        if (voiceError != null) {
+            listState.animateScrollToItem(0)
+        }
+    }
     val bottomPadding = floatingDockContentBottomPadding()
 
     LazyColumn(
@@ -264,7 +272,9 @@ fun JarvisVoiceSubScreen(
                     accent = ElectricCyan,
                     onValueChange = { rate ->
                         speechRate = rate
-                        assistant.ttsSpeechRate = rate
+                    },
+                    onValueChangeFinished = {
+                        assistant.ttsSpeechRate = speechRate
                     },
                 )
                 if (!selectedIsBundled) {
@@ -277,7 +287,9 @@ fun JarvisVoiceSubScreen(
                         accent = NeonViolet,
                         onValueChange = { p ->
                             pitch = p
-                            assistant.ttsPitch = p
+                        },
+                        onValueChangeFinished = {
+                            assistant.ttsPitch = pitch
                         },
                     )
                 }
@@ -466,6 +478,7 @@ private fun VoiceControlSlider(
     valueRange: ClosedFloatingPointRange<Float>,
     accent: Color,
     onValueChange: (Float) -> Unit,
+    onValueChangeFinished: () -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -490,6 +503,7 @@ private fun VoiceControlSlider(
             onValueChange = { raw ->
                 onValueChange(raw.coerceIn(valueRange.start, valueRange.endInclusive))
             },
+            onValueChangeFinished = onValueChangeFinished,
             valueRange = valueRange,
             colors = SliderDefaults.colors(
                 thumbColor = PureWhite,

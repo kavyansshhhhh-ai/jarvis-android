@@ -22,6 +22,7 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Unified Audio Output & Speech Engine for JARVIS.
@@ -206,7 +207,7 @@ class Speaker(private val context: Context? = null) {
         try {
             engine.setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build(),
             )
@@ -539,6 +540,12 @@ class Speaker(private val context: Context? = null) {
             if (onComplete != null) {
                 utteranceCallbacks[utteranceId] = UtteranceEntry(gen, onComplete, onComplete)
             }
+            _ttsError.value = null
+            activeUtteranceId = utteranceId
+            _previewingVoiceId.value = voiceId
+            _isSpeaking.value = true
+            _speechAmplitude.value = 0.25f
+
             val textToSpeak = sampleText ?: VoiceClassifier.sampleTextForLocale(bundledVoice.locale)
             val rate = appContext?.let { Settings(it).ttsSpeechRate } ?: 1.0f
             speakBundledOffline(
@@ -625,81 +632,110 @@ class Speaker(private val context: Context? = null) {
         gen: Long,
         isPreview: Boolean,
     ) {
-        val offlineEngine = offlineHindiEngine ?: return
+        val offlineEngine = offlineHindiEngine ?: run {
+            _ttsError.value = "Offline voice engine is unavailable."
+            handleUtteranceFinished(utteranceId, completedNaturally = false)
+            return
+        }
         offlineTtsExecutor.execute {
-            if (gen != ttsGeneration) {
-                utteranceCallbacks.remove(utteranceId)?.onInterrupted?.invoke()
-                return@execute
-            }
+            try {
+                if (gen != ttsGeneration) {
+                    utteranceCallbacks.remove(utteranceId)?.onInterrupted?.invoke()
+                    return@execute
+                }
 
-            _ttsError.value = null
-            activeUtteranceId = utteranceId
-            if (isPreview) {
-                _previewingVoiceId.value = voice.id
-            }
-            _isSpeaking.value = true
-            _speechAmplitude.value = 0.45f
-            requestAudioFocus()
-            AudioPlaybackState.onLocalTtsStarted()
+                _ttsError.value = null
+                activeUtteranceId = utteranceId
+                if (isPreview) {
+                    _previewingVoiceId.value = voice.id
+                }
+                _isSpeaking.value = true
+                _speechAmplitude.value = 0.45f
+                requestAudioFocus()
+                AudioPlaybackState.onLocalTtsStarted()
 
-            var playbackStartMs = 0L
-            var totalFrames = 0L
-            var activeRate = voice.sampleRate
+                var playbackStartMs = 0L
+                var totalFrames = 0L
+                var activeRate = voice.sampleRate
+                val writeFailed = AtomicBoolean(false)
 
-            val synthesized = offlineEngine.synthesizeStreaming(
-                voice = voice,
-                text = text,
-                speed = speed,
-                isCancelled = { gen != ttsGeneration },
-                onChunk = { chunk ->
-                    if (gen != ttsGeneration) return@synthesizeStreaming
-                    if (playbackStartMs == 0L) {
-                        playbackStartMs = SystemClock.elapsedRealtime()
+                val outcome = offlineEngine.synthesizeStreaming(
+                    voice = voice,
+                    text = text,
+                    speed = speed,
+                    isCancelled = { gen != ttsGeneration },
+                    onChunk = { chunk ->
+                        if (gen != ttsGeneration || writeFailed.get()) return@synthesizeStreaming
+                        if (chunk.pcm16.isEmpty() || chunk.sampleRate <= 0) return@synthesizeStreaming
+                        if (playbackStartMs == 0L) {
+                            playbackStartMs = SystemClock.elapsedRealtime()
+                        }
+                        activeRate = chunk.sampleRate
+                        val frames = chunk.pcm16.size / 2L
+                        totalFrames += frames
+                        val chunkDurationMs = frames * 1000L / activeRate
+                        val nowMs = SystemClock.elapsedRealtime()
+                        audibleUntil = maxOf(audibleUntil, nowMs) + chunkDurationMs + 80L
+                        _speechAmplitude.value = chunk.peakAmplitude
+
+                        val pcmGen = generation
+                        writer.execute {
+                            try {
+                                if (gen != ttsGeneration || pcmGen != generation) return@execute
+                                if (!writePcmToTrack(chunk.pcm16, chunk.sampleRate)) {
+                                    writeFailed.set(true)
+                                }
+                            } catch (t: Throwable) {
+                                Diag.w("speaker: writer chunk error: ${t.message}")
+                                writeFailed.set(true)
+                            }
+                        }
+                    },
+                )
+
+                if (gen != ttsGeneration || outcome is OfflineHindiTtsEngine.SynthesisOutcome.Cancelled) {
+                    handleUtteranceFinished(utteranceId, completedNaturally = false)
+                    return@execute
+                }
+
+                if (outcome is OfflineHindiTtsEngine.SynthesisOutcome.Failed) {
+                    Diag.w("offline-tts: synthesis failed for ${voice.id}: ${outcome.userMessage}")
+                    if (gen == ttsGeneration) {
+                        _ttsError.value = outcome.userMessage
                     }
-                    activeRate = chunk.sampleRate
-                    val frames = chunk.pcm16.size / 2L
-                    totalFrames += frames
-                    val chunkDurationMs = frames * 1000L / activeRate
-                    val nowMs = SystemClock.elapsedRealtime()
-                    audibleUntil = maxOf(audibleUntil, nowMs) + chunkDurationMs + 80L
-                    _speechAmplitude.value = chunk.peakAmplitude
+                    handleUtteranceFinished(utteranceId, completedNaturally = false)
+                    return@execute
+                }
 
-                    val pcmGen = generation
-                    writer.execute {
-                        if (gen != ttsGeneration || pcmGen != generation) return@execute
-                        val out = trackFor(chunk.sampleRate)
-                        keep(chunk.pcm16, chunk.sampleRate)
-                        out.write(chunk.pcm16, 0, chunk.pcm16.size)
+                // Ensure all AudioTrack writes completed before checking status or waiting tail
+                runCatching { writer.submit {}.get() }
+                if (writeFailed.get()) {
+                    if (gen == ttsGeneration) {
+                        _ttsError.value = "Could not play audio on this phone's speaker."
                     }
-                },
-            )
+                    handleUtteranceFinished(utteranceId, completedNaturally = false)
+                    return@execute
+                }
 
-            if (gen != ttsGeneration) {
-                handleUtteranceFinished(utteranceId, completedNaturally = false)
-                return@execute
-            }
-
-            if (!synthesized) {
-                Diag.w("offline-tts: synthesis produced no audio for ${voice.id}")
-                _ttsError.value = if (isPreview) "Could not play voice preview." else "Voice playback could not speak this reply."
-                handleUtteranceFinished(utteranceId, completedNaturally = false)
-                return@execute
-            }
-
-            // Ensure all AudioTrack writes completed and wait for audible tail unless interrupted
-            runCatching { writer.submit {}.get() }
-            if (playbackStartMs > 0L && totalFrames > 0L) {
-                val expectedEndMs = playbackStartMs + (totalFrames * 1000L / activeRate) + 60L
-                while (gen == ttsGeneration && SystemClock.elapsedRealtime() < expectedEndMs) {
-                    try {
-                        Thread.sleep(40L)
-                    } catch (_: InterruptedException) {
-                        break
+                if (playbackStartMs > 0L && totalFrames > 0L) {
+                    val expectedEndMs = playbackStartMs + (totalFrames * 1000L / activeRate) + 60L
+                    while (gen == ttsGeneration && SystemClock.elapsedRealtime() < expectedEndMs) {
+                        try {
+                            Thread.sleep(40L)
+                        } catch (_: InterruptedException) {
+                            break
+                        }
                     }
                 }
-            }
 
-            handleUtteranceFinished(utteranceId, completedNaturally = gen == ttsGeneration)
+                handleUtteranceFinished(utteranceId, completedNaturally = gen == ttsGeneration)
+            } catch (t: Throwable) {
+                Diag.w("offline-tts: unexpected executor error for ${voice.id}: ${t.message}")
+                if (gen == ttsGeneration) {
+                    _ttsError.value = if (isPreview) "Could not play voice preview." else "Voice playback could not speak this reply."
+                }
+                handleUtteranceFinished(utteranceId, completedNaturally = false)
+            }
         }
     }
 
@@ -739,11 +775,7 @@ class Speaker(private val context: Context? = null) {
             generation++
             audibleUntil = 0L
             writer.execute {
-                track?.run {
-                    pause()
-                    flush()
-                    play()
-                }
+                resetTrackSafely()
                 clearRing()
             }
         }
@@ -760,11 +792,7 @@ class Speaker(private val context: Context? = null) {
             generation++
             audibleUntil = 0L
             writer.execute {
-                track?.run {
-                    pause()
-                    flush()
-                    play()
-                }
+                resetTrackSafely()
                 clearRing()
             }
         }
@@ -794,7 +822,7 @@ class Speaker(private val context: Context? = null) {
             val req = audioFocusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                 .setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build(),
                 )
@@ -832,24 +860,26 @@ class Speaker(private val context: Context? = null) {
         replyOpen = true
         if (first) requestAudioFocus()
         val now = SystemClock.elapsedRealtime()
-        val durationMs = pcm.size / 2 * 1000L / sampleRate
+        val durationMs = pcm.size / 2 * 1000L / sampleRate.coerceAtLeast(1)
         audibleUntil = maxOf(audibleUntil, now) + durationMs + if (first) LEAD_IN_MS else 0
         _speechAmplitude.value = (pcmLevel(pcm) / 3000f).coerceIn(0f, 1f)
         AudioPlaybackState.onLiveSpeakerState(active = true, nowMs = now)
         writer.execute {
-            if (gen != generation) return@execute
-            val out = trackFor(sampleRate)
-            if (first) {
-                // A little silence first gives network hiccups room before the speaker runs dry.
-                val lead = ByteArray((sampleRate * LEAD_IN_MS / 1000).toInt() * 2)
-                keep(lead, sampleRate)
-                out.write(lead, 0, lead.size)
-            } else if (out.underrunCount > underrunsSeen) {
-                gaps++
+            try {
+                if (gen != generation) return@execute
+                val out = trackFor(sampleRate) ?: return@execute
+                if (first) {
+                    // A little silence first gives network hiccups room before the speaker runs dry.
+                    val lead = ByteArray((sampleRate * LEAD_IN_MS / 1000).toInt() * 2)
+                    writePcmToTrack(lead, sampleRate)
+                } else if (out.underrunCount > underrunsSeen) {
+                    gaps++
+                }
+                writePcmToTrack(pcm, sampleRate)
+                track?.let { underrunsSeen = runCatching { it.underrunCount }.getOrDefault(underrunsSeen) }
+            } catch (t: Throwable) {
+                Diag.w("speaker: play error: ${t.message}")
             }
-            keep(pcm, sampleRate)
-            out.write(pcm, 0, pcm.size)
-            underrunsSeen = out.underrunCount
         }
     }
 
@@ -877,11 +907,7 @@ class Speaker(private val context: Context? = null) {
         AudioPlaybackState.onLiveSpeakerState(active = false)
         stopTts()
         writer.execute {
-            track?.run {
-                pause()
-                flush()
-                play()
-            }
+            resetTrackSafely()
             clearRing() // the track's position starts again at 0
         }
     }
@@ -897,39 +923,125 @@ class Speaker(private val context: Context? = null) {
         _isTtsReadyState.value = false
         offlineHindiEngine?.release()
         writer.execute {
-            track?.release()
+            runCatching { track?.release() }
             track = null
             trackRate = 0
             clearRing()
         }
     }
 
-    private fun trackFor(rate: Int): AudioTrack {
-        track?.let { if (trackRate == rate) return it else it.release() }
-        val minBuffer = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        val created = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build(),
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(rate)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build(),
-            )
-            .setBufferSizeInBytes(minBuffer * 4)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
-        created.play()
-        clearRing()
-        track = created
-        trackRate = rate
-        underrunsSeen = 0
-        return created
+    private fun resetTrackSafely() {
+        val t = track ?: return
+        try {
+            if (t.state == AudioTrack.STATE_INITIALIZED) {
+                t.pause()
+                t.flush()
+                t.play()
+            } else {
+                t.release()
+                track = null
+                trackRate = 0
+            }
+        } catch (err: Throwable) {
+            Diag.w("speaker: resetTrackSafely failed: ${err.message}")
+            runCatching { t.release() }
+            track = null
+            trackRate = 0
+        }
+    }
+
+    private fun writePcmToTrack(pcm: ByteArray, sampleRate: Int): Boolean {
+        if (pcm.isEmpty()) return true
+        var out = trackFor(sampleRate) ?: return false
+        keep(pcm, sampleRate)
+        var offset = 0
+        var retriedDead = false
+        while (offset < pcm.size) {
+            val written = try {
+                out.write(pcm, offset, pcm.size - offset)
+            } catch (t: Throwable) {
+                Diag.w("speaker: AudioTrack write threw: ${t.message}")
+                -1
+            }
+            if (written > 0) {
+                offset += written
+                continue
+            }
+            if (!retriedDead && (written == AudioTrack.ERROR_DEAD_OBJECT || written < 0)) {
+                retriedDead = true
+                Diag.w("speaker: AudioTrack write error ($written), recreating track")
+                runCatching { track?.release() }
+                track = null
+                trackRate = 0
+                out = trackFor(sampleRate) ?: return false
+                continue
+            }
+            Diag.w("speaker: AudioTrack write failed with code $written")
+            return false
+        }
+        return true
+    }
+
+    private fun trackFor(rate: Int): AudioTrack? {
+        if (rate !in 8_000..192_000) {
+            Diag.w("speaker: invalid sample rate $rate")
+            return null
+        }
+        track?.let { existing ->
+            if (trackRate == rate && existing.state == AudioTrack.STATE_INITIALIZED) {
+                if (existing.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                    runCatching { existing.play() }
+                }
+                return existing
+            }
+            runCatching { existing.release() }
+            track = null
+            trackRate = 0
+        }
+
+        val minBufferRaw = AudioTrack.getMinBufferSize(
+            rate,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
+        val safeMin = if (minBufferRaw > 0) minBufferRaw else (rate / 5) * 2
+        val bufferBytes = ((safeMin * 4).coerceAtLeast(8192) + 1) and 1.inv()
+
+        return try {
+            val created = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(),
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(rate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build(),
+                )
+                .setBufferSizeInBytes(bufferBytes)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+
+            if (created.state != AudioTrack.STATE_INITIALIZED) {
+                Diag.w("speaker: AudioTrack failed to initialize for rate=$rate buf=$bufferBytes")
+                runCatching { created.release() }
+                return null
+            }
+            runCatching { created.setVolume(AudioTrack.getMaxVolume()) }
+            created.play()
+            clearRing()
+            track = created
+            trackRate = rate
+            underrunsSeen = 0
+            created
+        } catch (t: Throwable) {
+            Diag.w("speaker: AudioTrack creation error for rate=$rate: ${t.message}")
+            null
+        }
     }
 
     /**

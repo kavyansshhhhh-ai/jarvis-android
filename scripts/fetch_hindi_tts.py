@@ -39,7 +39,18 @@ PIPER_MODELS = [
 ]
 
 KOKORO_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_0.tar.bz2"
-STAMP_FILE = ASSETS_OUT / ".tts-assets-v1.ready"
+SUPERTONIC_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2"
+SUPERTONIC_FILES = (
+    "duration_predictor.int8.onnx",
+    "text_encoder.int8.onnx",
+    "vector_estimator.int8.onnx",
+    "vocoder.int8.onnx",
+    "tts.json",
+    "unicode_indexer.bin",
+    "voice.bin",
+    "LICENSE",
+)
+STAMP_FILE = ASSETS_OUT / ".tts-assets-v2.ready"
 
 
 def download(url: str, dest: pathlib.Path) -> pathlib.Path:
@@ -124,34 +135,55 @@ def extract_kokoro() -> None:
                         out.write(src.read())
 
 
+def extract_supertonic() -> None:
+    archive = download(SUPERTONIC_URL, CACHE_DIR / "supertonic-3.tar.bz2")
+    out_dir = ASSETS_OUT / "supertonic"
+    required = [out_dir / fname for fname in SUPERTONIC_FILES[:-1]]
+    if all(p.exists() and p.stat().st_size > 0 for p in required):
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive, "r:bz2") as tf:
+        for member in tf.getmembers():
+            if not member.isfile():
+                continue
+            base = pathlib.PurePosixPath(member.name).name
+            if base in SUPERTONIC_FILES:
+                src = tf.extractfile(member)
+                if src is not None:
+                    with src, open(out_dir / base, "wb") as out:
+                        out.write(src.read())
+
+
 def main() -> int:
     # Ensure AAR exists
     download(AAR_URL, LIBS_DIR / AAR_NAME)
 
-    if STAMP_FILE.exists():
-        # Verify essential assets are intact
-        expected = [
-            ASSETS_OUT / "espeak-ng-data" / "hi_dict",
-            ASSETS_OUT / "piper" / "priyamvada" / "hi_IN-priyamvada-medium.onnx",
-            ASSETS_OUT / "piper" / "pratham" / "hi_IN-pratham-medium.onnx",
-            ASSETS_OUT / "piper" / "rohan" / "hi_IN-rohan-medium.onnx",
-            ASSETS_OUT / "kokoro" / "model.int8.onnx",
-            ASSETS_OUT / "kokoro" / "voices.bin",
-            ASSETS_OUT / "kokoro" / "tokens.txt",
-        ]
-        if all(p.exists() for p in expected):
-            return 0
+    expected = [
+        ASSETS_OUT / "espeak-ng-data" / "hi_dict",
+        ASSETS_OUT / "piper" / "priyamvada" / "hi_IN-priyamvada-medium.onnx",
+        ASSETS_OUT / "piper" / "pratham" / "hi_IN-pratham-medium.onnx",
+        ASSETS_OUT / "piper" / "rohan" / "hi_IN-rohan-medium.onnx",
+        ASSETS_OUT / "kokoro" / "model.int8.onnx",
+        ASSETS_OUT / "kokoro" / "voices.bin",
+        ASSETS_OUT / "kokoro" / "tokens.txt",
+        *(ASSETS_OUT / "supertonic" / fname for fname in SUPERTONIC_FILES[:-1]),
+    ]
+    if STAMP_FILE.exists() and all(p.exists() for p in expected):
+        return 0
 
     ASSETS_OUT.mkdir(parents=True, exist_ok=True)
     for name, url, stem in PIPER_MODELS:
         extract_piper(name, url, stem)
     extract_kokoro()
+    extract_supertonic()
 
     # Record clean asset manifest for diagnostics/verification
     manifest = {
         "espeak_files": sum(1 for _ in (ASSETS_OUT / "espeak-ng-data").rglob("*") if _.is_file()),
         "piper": [name for name, _, _ in PIPER_MODELS],
         "kokoro_speakers": {"hf_alpha": 31, "hf_beta": 32, "hm_omega": 33, "hm_psi": 34},
+        "supertonic_speakers": {"F1": 0, "F2": 1, "M1": 5},
     }
     STAMP_FILE.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(f"Prepared offline Hindi TTS assets at {ASSETS_OUT}", flush=True)

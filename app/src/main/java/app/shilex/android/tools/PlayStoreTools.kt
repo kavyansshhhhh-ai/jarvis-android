@@ -316,16 +316,17 @@ object PlayStoreTools {
                             val searchNode = searchEl?.number?.let(service::node)
                             if (searchNode != null) {
                                 if (searchNode.isEditable) {
-                                    if (service.type(searchNode, appName)) {
+                                    if (service.type(searchNode, appName, submitIme = true)) {
                                         typedSearch = true
                                         Diag.i("playstore: typed query $appName")
                                     }
                                 } else if (service.click(searchNode)) {
                                     delay(500)
                                     service.focusedField()?.let { field ->
-                                        service.type(field, appName)
-                                        typedSearch = true
-                                        Diag.i("playstore: opened search & typed $appName")
+                                        if (service.type(field, appName, submitIme = true)) {
+                                            typedSearch = true
+                                            Diag.i("playstore: opened search & typed $appName")
+                                        }
                                     }
                                 }
                             }
