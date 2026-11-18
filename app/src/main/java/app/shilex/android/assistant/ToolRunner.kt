@@ -86,6 +86,7 @@ class ToolRunner(
 
     private val duplicates = DuplicateGuard()
     private val trust = TurnTrust()
+    override val recoveryController = AgentRecoveryController(maxRetries = 2)
     private val cancelled = Collections.synchronizedSet(mutableSetOf<String>())
     private class Pending(val intent: Intent, val label: String, val then: (suspend () -> String?)?)
 
@@ -98,11 +99,18 @@ class ToolRunner(
 
     fun handle(calls: List<FunctionCall>) {
         scope.launch(Dispatchers.Default) {
+            ControlService.instance?.foregroundPackage()?.takeIf { it.isNotEmpty() }?.let { pkg ->
+                recoveryController.onScreenChanged(pkg)
+            }
             val results = calls.map { call ->
                 // Only tools in the capability registry run; the model can't invent others.
                 val capability = Capabilities.of(call.name)
                 val tool = tools[call.name]?.takeIf { capability != null }
                 val args = call.args.toString()
+                if (call.name == "open_app") {
+                    val dest = call.args.optString("name").trim()
+                    if (dest.isNotEmpty()) recoveryController.onDestinationChanged("open_app:$dest")
+                }
                 val sensitive = capability != null && capability.risk >= Risk.High
                 val clean = trust.mayLearn
                 val response = if (tool == null) {
@@ -168,7 +176,13 @@ class ToolRunner(
 
     /** The user spoke or typed: their words lead again ([TurnTrust]) and may answer a reply read-back. */
     fun userSpoke(text: String = "") {
-        if (text.isNotBlank()) lastUserText = text
+        if (text.isNotBlank()) {
+            lastUserText = text
+            recoveryController.onNewUserCommand(text)
+            AppNavigationIntent.fromCommand(text)?.let { nav ->
+                recoveryController.onDestinationChanged("${nav.packageName}:${nav.destination.name}")
+            }
+        }
         ActiveTaskContext.clearIfStale()
         trust.userSpoke()
         Replies.heard(text)
@@ -227,6 +241,7 @@ class ToolRunner(
         pending = null
         lastUserText = ""
         cancelled.clear()
+        recoveryController.reset()
         trust.userSpoke()
     }
 

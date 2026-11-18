@@ -44,6 +44,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     val task: StateFlow<Task?> = TaskTracker.current
     private val settings = Settings(app)
     private val local = LocalTurn.get(app)
+    val actionRecovery = AgentRecoveryController(maxRetries = 2)
 
     val localPhase: StateFlow<LocalPhase> = local.phase
 
@@ -209,11 +210,13 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     fun start() = session.start()
 
     fun stop() {
+        actionRecovery.reset()
         local.stop()
         session.stop("Stop button")
     }
 
     fun shutdownCompletely(reason: String = "user requested shutdown") {
+        actionRecovery.reset()
         session.shutdownCompletely(reason)
     }
 

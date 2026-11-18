@@ -11,6 +11,8 @@ import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import app.shilex.android.Diag
+import app.shilex.android.assistant.ScreenElement as AssistantScreenElement
+import app.shilex.android.assistant.ScreenState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
@@ -80,11 +82,16 @@ class ControlService : AccessibilityService() {
         val allowPlayStore: Boolean = false,
         val screenWidthPx: Int = 0,
         val screenHeightPx: Int = 0,
+        val screenState: ScreenState? = null,
     ) {
         val blocked get() = ControlRules.blocked(packageName, allowPlayStoreAutomation = allowPlayStore)
         val upiApp get() = ControlRules.isSupportedUpiApp(packageName)
         val financeApp get() = ControlRules.isFinanceApp(packageName)
     }
+
+    /** Captures a fresh [ScreenState] directly from the live Accessibility hierarchy. */
+    fun captureScreenState(allowPlayStore: Boolean = false): ScreenState? =
+        snapshot(allowPlayStore = allowPlayStore)?.screenState
 
     fun lastElements(): List<ScreenElement> = lastElementsList
 
@@ -145,6 +152,7 @@ class ControlService : AccessibilityService() {
             return Snapshot(pkg, label, emptyList(), false, restrictedBySystem = true, allowPlayStore = allowPlayStore, screenWidthPx = screenW, screenHeightPx = screenH)
         }
         val elements = mutableListOf<ScreenElement>()
+        val assistantElements = mutableListOf<AssistantScreenElement>()
         val nodes = mutableMapOf<Int, AccessibilityNodeInfo>()
         val metaMap = mutableMapOf<Int, NodeMeta>()
         var more = false
@@ -156,7 +164,8 @@ class ControlService : AccessibilityService() {
                 restrictedBySystem = true
                 return
             }
-            val rawViewId = node.viewIdResourceName?.substringAfterLast('/').orEmpty()
+            val rawFullId = node.viewIdResourceName.orEmpty()
+            val rawViewId = rawFullId.substringAfterLast('/')
             val cleanViewId = cleanViewIdLabel(rawViewId)
             val own = ownLabel(node)
             val hint = nonBlank(node.hintText)
@@ -165,6 +174,28 @@ class ControlService : AccessibilityService() {
                 return
             }
             if (node.isScrollable) more = true
+            val bounds = Rect().also(node::getBoundsInScreen)
+            val nodeTextRaw = nonBlank(node.text)
+            val nodeDescRaw = nonBlank(node.contentDescription)
+            val sensitiveField = ControlRules.isSensitiveCredentialField(
+                own.ifEmpty { nodeTextRaw },
+                rawViewId,
+                node.isPassword,
+            )
+            if (!sensitiveField &&
+                (nodeTextRaw.isNotEmpty() || nodeDescRaw.isNotEmpty() || node.isClickable || rawFullId.isNotEmpty()) &&
+                assistantElements.size < MAX_SCREEN_STATE_ELEMENTS
+            ) {
+                assistantElements += AssistantScreenElement(
+                    text = nodeTextRaw,
+                    description = nodeDescRaw,
+                    resourceId = rawFullId,
+                    className = node.className?.toString().orEmpty(),
+                    clickable = node.isClickable,
+                    enabled = node.isEnabled,
+                    bounds = "${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}",
+                )
+            }
             val tappable = node.isClickable || node.isEditable || node.isCheckable
             val include = when {
                 tappable -> true
@@ -182,7 +213,6 @@ class ControlService : AccessibilityService() {
                     } else {
                         ""
                     }
-                    val bounds = Rect().also(node::getBoundsInScreen)
                     elements += ScreenElement(
                         number = number,
                         role = resolvedRole,
@@ -226,6 +256,12 @@ class ControlService : AccessibilityService() {
         lastMeta = metaMap
         lastElementsList = elements.toList()
         val sig = "$pkg:${elements.size}:${elements.take(12).joinToString("|") { "${it.label}=${it.value}" }}"
+        val freshScreenState = ScreenState(
+            packageName = pkg,
+            screenTitle = label,
+            elements = assistantElements.toList(),
+            capturedAt = System.currentTimeMillis(),
+        )
         return Snapshot(
             pkg,
             label,
@@ -237,6 +273,7 @@ class ControlService : AccessibilityService() {
             allowPlayStore = allowPlayStore,
             screenWidthPx = screenW,
             screenHeightPx = screenH,
+            screenState = freshScreenState,
         )
     }
 
@@ -480,6 +517,8 @@ class ControlService : AccessibilityService() {
     }
 
     companion object {
+        private const val MAX_SCREEN_STATE_ELEMENTS = 100
+
         @Volatile var instance: ControlService? = null
             private set
     }

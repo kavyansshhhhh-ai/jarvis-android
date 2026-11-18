@@ -303,6 +303,56 @@ class VoiceClassifierTest {
         )
         assertEquals(3, parts.size)
     }
+
+    @Test
+    fun rejectsInvalidVoiceMetadataAndMissingEspeakTablesBeforeNativeJniCall() {
+        val catalogValidation = BundledHindiVoices.validateCatalog()
+        assertTrue(catalogValidation.isValid)
+        assertEquals(10, BundledHindiVoices.ALL.size)
+
+        val badVoice = BundledHindiVoices.PRIYAMVADA.copy(
+            locale = java.util.Locale.US,
+            sampleRate = 0,
+        )
+        assertFalse(VoiceClassifier.validateBundledVoice(badVoice).isValid)
+        assertFalse(VoiceClassifier.validateVoiceInfo(badVoice.toTtsVoiceInfo()).isValid)
+        assertTrue(VoiceClassifier.validateBundledVoice(BundledHindiVoices.PRIYAMVADA).isValid)
+
+        val tempRoot = java.nio.file.Files.createTempDirectory("tts_guard_test").toFile()
+        try {
+            val espeakDir = java.io.File(tempRoot, "espeak-ng-data").apply { mkdirs() }
+            val modelFile = java.io.File(tempRoot, "model.onnx").apply { writeBytes(ByteArray(32) { 1 }) }
+            val tokensFile = java.io.File(tempRoot, "tokens.txt").apply { writeText("a 1\n") }
+
+            // Missing espeak tables -> must return failure message instead of invoking Sherpa-ONNX JNI
+            espeakDir.resolve("hi_dict").writeBytes(ByteArray(8) { 1 })
+            espeakDir.resolve("phontab").writeBytes(ByteArray(8) { 1 })
+            val missingTables = OfflineHindiTtsEngine.validateExtractedFiles(
+                voice = BundledHindiVoices.PRIYAMVADA,
+                paths = mapOf(
+                    BundledHindiVoices.PRIYAMVADA.modelAssetPath to modelFile,
+                    BundledHindiVoices.PRIYAMVADA.tokensAssetPath to tokensFile,
+                ),
+                espeakDir = espeakDir,
+            )
+            assertTrue(missingTables?.contains("phonindex") == true || missingTables?.contains("phondata") == true)
+
+            // Populate all required espeak-ng tables -> validation succeeds cleanly
+            espeakDir.resolve("lang/inc").mkdirs()
+            BundledHindiVoices.REQUIRED_ESPEAK_FILES.forEach { rel ->
+                espeakDir.resolve(rel).writeBytes(ByteArray(8) { 1 })
+            }
+            val ok = OfflineHindiTtsEngine.validateExtractedFiles(
+                voice = BundledHindiVoices.PRIYAMVADA,
+                paths = mapOf(
+                    BundledHindiVoices.PRIYAMVADA.modelAssetPath to modelFile,
+                    BundledHindiVoices.PRIYAMVADA.tokensAssetPath to tokensFile,
+                ),
+                espeakDir = espeakDir,
+            )
+            assertEquals(null, ok)
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
 }
-
-

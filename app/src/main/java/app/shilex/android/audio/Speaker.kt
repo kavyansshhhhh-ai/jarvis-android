@@ -59,6 +59,7 @@ class Speaker(private val context: Context? = null) {
     @Volatile private var ttsInitInProgress = false
     @Volatile private var activeUtteranceId: String? = null
     @Volatile private var ttsGeneration = 0L
+    private val ttsStateLock = Any()
 
     private val offlineHindiEngine: OfflineHindiTtsEngine? = appContext?.let { OfflineHindiTtsEngine(it) }
     private val offlineTtsExecutor = Executors.newSingleThreadExecutor { Thread(it, "offline-tts") }
@@ -256,7 +257,9 @@ class Speaker(private val context: Context? = null) {
 
     private fun handleUtteranceFinished(utteranceId: String?, completedNaturally: Boolean) {
         val entry = utteranceId?.let { utteranceCallbacks.remove(it) }
-        val isStale = entry != null && entry.generation != ttsGeneration
+        val isStale = synchronized(ttsStateLock) {
+            entry != null && entry.generation != ttsGeneration
+        }
         if (!isStale && entry != null) {
             if (completedNaturally) {
                 entry.onComplete?.invoke()
@@ -266,16 +269,20 @@ class Speaker(private val context: Context? = null) {
         } else if (isStale) {
             entry?.onInterrupted?.invoke()
         }
-        if (utteranceId != null && utteranceId != activeUtteranceId) {
-            return
+        val shouldRestoreSaved = synchronized(ttsStateLock) {
+            if (utteranceId != null && utteranceId != activeUtteranceId) {
+                return
+            }
+            val wasPreview = _previewingVoiceId.value != null || (utteranceId != null && utteranceId.startsWith("preview_"))
+            activeUtteranceId = null
+            _isSpeaking.value = false
+            _speechAmplitude.value = 0f
+            if (wasPreview) {
+                _previewingVoiceId.value = null
+            }
+            wasPreview
         }
-        val wasPreview = _previewingVoiceId.value != null || (utteranceId != null && utteranceId.startsWith("preview_"))
-        activeUtteranceId = null
-        _isSpeaking.value = false
-        _speechAmplitude.value = 0f
-        if (wasPreview) {
-            _previewingVoiceId.value = null
-            // Restore chosen assistant voice after preview ends
+        if (shouldRestoreSaved) {
             applySavedVoiceAndSettings()
         }
         AudioPlaybackState.onLocalTtsEnded()
@@ -451,11 +458,11 @@ class Speaker(private val context: Context? = null) {
         if (queueMode == TextToSpeech.QUEUE_FLUSH) {
             interruptActiveAudioForNewSpeech()
         }
-        val gen = ttsGeneration
+        val gen = synchronized(ttsStateLock) { ttsGeneration }
         val utteranceId = "reply_${UUID.randomUUID()}"
         utteranceCallbacks[utteranceId] = UtteranceEntry(gen, onComplete, onInterrupted)
 
-        // Prefer genuine bundled offline Hindi neural voice when selected or resolved as default
+        // Resolve and strictly validate saved voice so all speech outputs use the exact selected voice.
         val effectiveVoiceId = VoiceClassifier.resolveEffectiveVoiceId(
             savedVoiceId = settings?.ttsVoiceId,
             catalog = _hindiCatalog.value,
@@ -463,7 +470,18 @@ class Speaker(private val context: Context? = null) {
         )
         val bundledVoice = BundledHindiVoices.find(effectiveVoiceId)
         val offlineEngine = offlineHindiEngine
-        if (bundledVoice != null && offlineEngine != null && offlineEngine.isVoiceAvailable(bundledVoice)) {
+        if (bundledVoice != null) {
+            val validation = VoiceClassifier.validateBundledVoice(bundledVoice)
+            if (!validation.isValid) {
+                _ttsError.value = validation.reason
+                utteranceCallbacks.remove(utteranceId)?.onInterrupted?.invoke()
+                return
+            }
+            if (offlineEngine == null || !offlineEngine.isVoiceAvailable(bundledVoice)) {
+                _ttsError.value = "${bundledVoice.displayName} files are unavailable on this device."
+                utteranceCallbacks.remove(utteranceId)?.onInterrupted?.invoke()
+                return
+            }
             speakBundledOffline(
                 voice = bundledVoice,
                 text = cleaned,
@@ -497,19 +515,23 @@ class Speaker(private val context: Context? = null) {
         applySavedVoiceAndSettings()
         requestAudioFocus()
         _ttsError.value = null
-        activeUtteranceId = utteranceId
-        _isSpeaking.value = true
-        _speechAmplitude.value = 0.45f
+        synchronized(ttsStateLock) {
+            activeUtteranceId = utteranceId
+            _isSpeaking.value = true
+            _speechAmplitude.value = 0.45f
+        }
         AudioPlaybackState.onLocalTtsStarted()
 
         val result = runCatching { engine.speak(cleaned, queueMode, null, utteranceId) }
             .getOrDefault(TextToSpeech.ERROR)
         if (result != TextToSpeech.SUCCESS) {
             Diag.w("tts: speak failed with code $result")
-            if (activeUtteranceId == utteranceId) activeUtteranceId = null
+            synchronized(ttsStateLock) {
+                if (activeUtteranceId == utteranceId) activeUtteranceId = null
+                _isSpeaking.value = false
+                _speechAmplitude.value = 0f
+            }
             _ttsError.value = "Voice playback could not speak this reply."
-            _isSpeaking.value = false
-            _speechAmplitude.value = 0f
             AudioPlaybackState.onLocalTtsEnded()
             abandonAudioFocus()
             utteranceCallbacks.remove(utteranceId)?.onInterrupted?.invoke()
@@ -530,21 +552,30 @@ class Speaker(private val context: Context? = null) {
         val bundledVoice = BundledHindiVoices.find(voiceId)
         val offlineEngine = offlineHindiEngine
         if (bundledVoice != null) {
+            val validation = VoiceClassifier.validateBundledVoice(bundledVoice)
+            if (!validation.isValid) {
+                _ttsError.value = validation.reason
+                onComplete?.invoke()
+                return
+            }
             if (offlineEngine == null || !offlineEngine.isVoiceAvailable(bundledVoice)) {
                 _ttsError.value = "This Hindi voice is unavailable right now."
                 onComplete?.invoke()
                 return
             }
-            val gen = ttsGeneration
             val utteranceId = "preview_${UUID.randomUUID()}"
-            if (onComplete != null) {
-                utteranceCallbacks[utteranceId] = UtteranceEntry(gen, onComplete, onComplete)
+            val gen = synchronized(ttsStateLock) {
+                val g = ttsGeneration
+                if (onComplete != null) {
+                    utteranceCallbacks[utteranceId] = UtteranceEntry(g, onComplete, onComplete)
+                }
+                _ttsError.value = null
+                activeUtteranceId = utteranceId
+                _previewingVoiceId.value = voiceId
+                _isSpeaking.value = true
+                _speechAmplitude.value = 0.25f
+                g
             }
-            _ttsError.value = null
-            activeUtteranceId = utteranceId
-            _previewingVoiceId.value = voiceId
-            _isSpeaking.value = true
-            _speechAmplitude.value = 0.25f
 
             val textToSpeak = sampleText ?: VoiceClassifier.sampleTextForLocale(bundledVoice.locale)
             val rate = appContext?.let { Settings(it).ttsSpeechRate } ?: 1.0f
@@ -580,12 +611,17 @@ class Speaker(private val context: Context? = null) {
         }
 
         val previewLocale = targetVoice.locale ?: Locale("hi", "IN")
+        if (!VoiceClassifier.isHindiIndiaLocale(previewLocale)) {
+            _ttsError.value = "Only Hindi (India) voices are supported."
+            onComplete?.invoke()
+            return
+        }
         val textToSpeak = sampleText ?: VoiceClassifier.sampleTextForLocale(previewLocale)
 
         appContext?.let { ctx ->
             val settings = Settings(ctx)
             runCatching { engine.setSpeechRate(settings.ttsSpeechRate) }
-            runCatching { engine.setPitch(settings.ttsPitch) }
+            runCatching { engine.setPitch(1.0f) }
         }
         if (runCatching { engine.voice = targetVoice }.isFailure) {
             _ttsError.value = "Could not load this Hindi voice."
@@ -594,17 +630,18 @@ class Speaker(private val context: Context? = null) {
             return
         }
 
-        val gen = ttsGeneration
         val utteranceId = "preview_${UUID.randomUUID()}"
-        if (onComplete != null) {
-            utteranceCallbacks[utteranceId] = UtteranceEntry(gen, onComplete, onComplete)
+        synchronized(ttsStateLock) {
+            val gen = ttsGeneration
+            if (onComplete != null) {
+                utteranceCallbacks[utteranceId] = UtteranceEntry(gen, onComplete, onComplete)
+            }
+            _ttsError.value = null
+            activeUtteranceId = utteranceId
+            _previewingVoiceId.value = voiceId
+            _isSpeaking.value = true
+            _speechAmplitude.value = 0.45f
         }
-
-        _ttsError.value = null
-        activeUtteranceId = utteranceId
-        _previewingVoiceId.value = voiceId
-        _isSpeaking.value = true
-        _speechAmplitude.value = 0.45f
         requestAudioFocus()
         AudioPlaybackState.onLocalTtsStarted()
 
@@ -612,11 +649,15 @@ class Speaker(private val context: Context? = null) {
             .getOrDefault(TextToSpeech.ERROR)
         if (res != TextToSpeech.SUCCESS) {
             Diag.w("tts: preview failed with code $res")
-            if (activeUtteranceId == utteranceId) activeUtteranceId = null
+            synchronized(ttsStateLock) {
+                if (activeUtteranceId == utteranceId) {
+                    activeUtteranceId = null
+                    _previewingVoiceId.value = null
+                    _isSpeaking.value = false
+                    _speechAmplitude.value = 0f
+                }
+            }
             _ttsError.value = "Could not play voice preview."
-            _previewingVoiceId.value = null
-            _isSpeaking.value = false
-            _speechAmplitude.value = 0f
             AudioPlaybackState.onLocalTtsEnded()
             abandonAudioFocus()
             utteranceCallbacks.remove(utteranceId)?.onInterrupted?.invoke()
@@ -639,18 +680,25 @@ class Speaker(private val context: Context? = null) {
         }
         offlineTtsExecutor.execute {
             try {
-                if (gen != ttsGeneration) {
+                val activeValid = synchronized(ttsStateLock) {
+                    if (gen != ttsGeneration) {
+                        false
+                    } else {
+                        _ttsError.value = null
+                        activeUtteranceId = utteranceId
+                        if (isPreview) {
+                            _previewingVoiceId.value = voice.id
+                        }
+                        _isSpeaking.value = true
+                        _speechAmplitude.value = 0.45f
+                        true
+                    }
+                }
+                if (!activeValid) {
                     utteranceCallbacks.remove(utteranceId)?.onInterrupted?.invoke()
                     return@execute
                 }
 
-                _ttsError.value = null
-                activeUtteranceId = utteranceId
-                if (isPreview) {
-                    _previewingVoiceId.value = voice.id
-                }
-                _isSpeaking.value = true
-                _speechAmplitude.value = 0.45f
                 requestAudioFocus()
                 AudioPlaybackState.onLocalTtsStarted()
 
@@ -700,18 +748,34 @@ class Speaker(private val context: Context? = null) {
 
                 if (outcome is OfflineHindiTtsEngine.SynthesisOutcome.Failed) {
                     Diag.w("offline-tts: synthesis failed for ${voice.id}: ${outcome.userMessage}")
-                    if (gen == ttsGeneration) {
-                        _ttsError.value = outcome.userMessage
+                    synchronized(ttsStateLock) {
+                        if (gen == ttsGeneration) {
+                            _ttsError.value = outcome.userMessage
+                        }
                     }
                     handleUtteranceFinished(utteranceId, completedNaturally = false)
                     return@execute
                 }
 
-                // Ensure all AudioTrack writes completed before checking status or waiting tail
-                runCatching { writer.submit {}.get() }
+                if (totalFrames <= 0L) {
+                    synchronized(ttsStateLock) {
+                        if (gen == ttsGeneration) {
+                            _ttsError.value = "${voice.displayName} produced no audio frames."
+                        }
+                    }
+                    handleUtteranceFinished(utteranceId, completedNaturally = false)
+                    return@execute
+                }
+
+                // Drain queued AudioTrack writes unless interrupted
+                if (gen == ttsGeneration) {
+                    runCatching { writer.submit {}.get() }
+                }
                 if (writeFailed.get()) {
-                    if (gen == ttsGeneration) {
-                        _ttsError.value = "Could not play audio on this phone's speaker."
+                    synchronized(ttsStateLock) {
+                        if (gen == ttsGeneration) {
+                            _ttsError.value = "Could not play audio on this phone's speaker."
+                        }
                     }
                     handleUtteranceFinished(utteranceId, completedNaturally = false)
                     return@execute
@@ -731,8 +795,10 @@ class Speaker(private val context: Context? = null) {
                 handleUtteranceFinished(utteranceId, completedNaturally = gen == ttsGeneration)
             } catch (t: Throwable) {
                 Diag.w("offline-tts: unexpected executor error for ${voice.id}: ${t.message}")
-                if (gen == ttsGeneration) {
-                    _ttsError.value = if (isPreview) "Could not play voice preview." else "Voice playback could not speak this reply."
+                synchronized(ttsStateLock) {
+                    if (gen == ttsGeneration) {
+                        _ttsError.value = if (isPreview) "Could not play voice preview." else "Voice playback could not speak this reply."
+                    }
                 }
                 handleUtteranceFinished(utteranceId, completedNaturally = false)
             }
@@ -740,7 +806,10 @@ class Speaker(private val context: Context? = null) {
     }
 
     fun stopPreview() {
-        if (_previewingVoiceId.value != null) {
+        val wasPreviewing = synchronized(ttsStateLock) {
+            _previewingVoiceId.value != null || activeUtteranceId?.startsWith("preview_") == true
+        }
+        if (wasPreviewing) {
             stopTts()
             applySavedVoiceAndSettings()
         }
@@ -748,8 +817,9 @@ class Speaker(private val context: Context? = null) {
 
     private fun drainSpeechQueue() {
         val queue = synchronized(speechQueue) {
-            val copy = speechQueue.filter { it.generation == ttsGeneration }
-            val dropped = speechQueue.filter { it.generation != ttsGeneration }
+            val curGen = ttsGeneration
+            val copy = speechQueue.filter { it.generation == curGen }
+            val dropped = speechQueue.filter { it.generation != curGen }
             speechQueue.clear()
             dropped.forEach { it.onInterrupted?.invoke() }
             copy
@@ -769,7 +839,13 @@ class Speaker(private val context: Context? = null) {
     }
 
     private fun interruptActiveAudioForNewSpeech() {
-        ttsGeneration++
+        synchronized(ttsStateLock) {
+            ttsGeneration++
+            activeUtteranceId = null
+            _previewingVoiceId.value = null
+            _isSpeaking.value = false
+            _speechAmplitude.value = 0f
+        }
         runCatching { tts?.stop() }
         if (!replyOpen) {
             generation++
@@ -785,8 +861,13 @@ class Speaker(private val context: Context? = null) {
     }
 
     fun stopTts() {
-        ttsGeneration++
-        activeUtteranceId = null
+        synchronized(ttsStateLock) {
+            ttsGeneration++
+            activeUtteranceId = null
+            _isSpeaking.value = false
+            _speechAmplitude.value = 0f
+            _previewingVoiceId.value = null
+        }
         runCatching { tts?.stop() }
         if (!replyOpen) {
             generation++
@@ -804,9 +885,6 @@ class Speaker(private val context: Context? = null) {
         queued.forEach { it.onInterrupted?.invoke() }
         val pendingIds = utteranceCallbacks.keys.toList()
         pendingIds.forEach { id -> utteranceCallbacks.remove(id)?.onInterrupted?.invoke() }
-        _isSpeaking.value = false
-        _speechAmplitude.value = 0f
-        _previewingVoiceId.value = null
         AudioPlaybackState.onLocalTtsEnded()
         abandonAudioFocus()
     }

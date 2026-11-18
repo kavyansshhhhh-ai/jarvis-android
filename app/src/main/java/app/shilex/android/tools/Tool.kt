@@ -3,6 +3,7 @@ package app.shilex.android.tools
 import android.content.Context
 import android.content.Intent
 import android.content.IntentSender
+import app.shilex.android.assistant.AgentRecoveryController
 import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
@@ -17,10 +18,16 @@ interface PhoneTool {
     suspend fun run(args: JSONObject, host: ToolHost): JSONObject
 }
 
+private object DefaultToolRecovery {
+    val controller = AgentRecoveryController(maxRetries = 2)
+}
+
 /** What tools may do on the phone. Implemented by the voice session. */
 interface ToolHost {
     val context: Context
     val http: OkHttpClient
+    val recoveryController: AgentRecoveryController
+        get() = DefaultToolRecovery.controller
 
     /** Ask the user for a runtime permission on screen. Returns at once. */
     fun requestPermission(permission: String)

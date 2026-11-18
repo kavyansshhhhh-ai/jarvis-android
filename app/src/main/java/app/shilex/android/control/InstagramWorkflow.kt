@@ -1,5 +1,11 @@
 package app.shilex.android.control
 
+import app.shilex.android.assistant.ActionStatus
+import app.shilex.android.assistant.AgentActionResult
+import app.shilex.android.assistant.AppDestination
+import app.shilex.android.assistant.AppNavigationIntent
+import app.shilex.android.assistant.ScreenState
+
 /**
  * Pure Instagram screen & control disambiguation helpers (unit-tested without Android).
  * Distinguishes DM Thread, DM Inbox, Reels, Search, Home Feed, Create, Share Sheet, and Profile;
@@ -235,21 +241,77 @@ object InstagramMatcher {
         }
     }
 
-    /** Matches natural target queries like "messages", "dm", "composer", "reels", "search" to [TargetIntent]. */
+    fun resolveNavigationIntent(command: String): AppNavigationIntent? =
+        AppNavigationIntent.fromCommand(command, INSTAGRAM_PACKAGE)
+
+    fun intentForDestination(destination: AppDestination): TargetIntent = when (destination) {
+        AppDestination.MESSAGES -> TargetIntent.Messages
+        AppDestination.REELS -> TargetIntent.Reels
+        AppDestination.PROFILE -> TargetIntent.Profile
+        AppDestination.HOME -> TargetIntent.HomeFeed
+        AppDestination.SEARCH -> TargetIntent.Search
+        AppDestination.NOTIFICATIONS -> TargetIntent.Notifications
+    }
+
+    fun destinationForIntent(intent: TargetIntent): AppDestination? = when (intent) {
+        TargetIntent.Messages, TargetIntent.Composer, TargetIntent.DmSend -> AppDestination.MESSAGES
+        TargetIntent.Reels -> AppDestination.REELS
+        TargetIntent.Profile -> AppDestination.PROFILE
+        TargetIntent.HomeFeed -> AppDestination.HOME
+        TargetIntent.Search -> AppDestination.SEARCH
+        TargetIntent.Notifications -> AppDestination.NOTIFICATIONS
+        TargetIntent.Create, TargetIntent.Share -> null
+    }
+
+    fun destinationForScreen(screen: InstagramScreenState): AppDestination? = when (screen) {
+        InstagramScreenState.DirectInbox, InstagramScreenState.DirectThread -> AppDestination.MESSAGES
+        InstagramScreenState.Reels -> AppDestination.REELS
+        InstagramScreenState.Profile -> AppDestination.PROFILE
+        InstagramScreenState.HomeFeed -> AppDestination.HOME
+        InstagramScreenState.Search -> AppDestination.SEARCH
+        InstagramScreenState.Create, InstagramScreenState.ShareSheet, InstagramScreenState.Unknown -> null
+    }
+
+    fun isAlreadyAtDestination(screen: InstagramScreenState, destination: AppDestination): Boolean =
+        destinationForScreen(screen) == destination
+
+    fun isAlreadyAtDestination(
+        screenState: ScreenState?,
+        elements: List<ScreenElement>,
+        meta: Map<Int, ControlService.NodeMeta>,
+        destination: AppDestination,
+        screenHeightPx: Int = 0,
+    ): Boolean {
+        val detected = detectScreen(elements, meta, screenHeightPx)
+        if (isAlreadyAtDestination(detected, destination)) return true
+        if (screenState == null) return false
+        return when (destination) {
+            AppDestination.MESSAGES -> detected == InstagramScreenState.DirectInbox || detected == InstagramScreenState.DirectThread
+            AppDestination.REELS -> detected == InstagramScreenState.Reels
+            AppDestination.PROFILE -> detected == InstagramScreenState.Profile ||
+                (screenState.containsText("Edit profile") && screenState.containsText("Share profile"))
+            AppDestination.HOME -> detected == InstagramScreenState.HomeFeed
+            AppDestination.SEARCH -> detected == InstagramScreenState.Search
+            AppDestination.NOTIFICATIONS -> screenState.containsText("Notifications") &&
+                (screenState.containsText("Today") || screenState.containsText("This week"))
+        }
+    }
+
+    /** Matches natural target queries like "messages", "dm", "composer", "reels", "search", and Hinglish navigation phrases to [TargetIntent]. */
     fun inferIntent(query: String): TargetIntent? {
         val q = query.lowercase().trim()
         return when {
             Regex("\\b(message\\s+box|composer|write\\s+a?\\s*message|message\\.\\.\\.|type\\s+message|dm\\s+box|reply\\s+box)\\b").containsMatchIn(q) -> TargetIntent.Composer
             Regex("\\b(send\\s+message|send\\s+dm|dm\\s+send)\\b").containsMatchIn(q) -> TargetIntent.DmSend
-            Regex("\\b(messages?|dm|dms|inbox|chat|chats)\\b").containsMatchIn(q) -> TargetIntent.Messages
-            Regex("\\b(search|explore)\\b").containsMatchIn(q) -> TargetIntent.Search
+            Regex("\\b(messages?|dm|dms|inbox|chat|chats|msg|sandesh)\\b").containsMatchIn(q) -> TargetIntent.Messages
+            Regex("\\b(search|explore|khoj|dhundo)\\b").containsMatchIn(q) -> TargetIntent.Search
             Regex("\\b(reels?|clips?)\\b").containsMatchIn(q) -> TargetIntent.Reels
             Regex("\\b(create|new\\s+post|upload)\\b").containsMatchIn(q) -> TargetIntent.Create
             Regex("\\b(share\\s+post|share\\s+reel|share)\\b").containsMatchIn(q) -> TargetIntent.Share
-            Regex("\\b(profile|account)\\b").containsMatchIn(q) -> TargetIntent.Profile
-            Regex("\\b(home|feed)\\b").containsMatchIn(q) -> TargetIntent.HomeFeed
-            Regex("\\b(notifications?|activity)\\b").containsMatchIn(q) -> TargetIntent.Notifications
-            else -> null
+            Regex("\\b(profile|account|my\\s+page)\\b").containsMatchIn(q) -> TargetIntent.Profile
+            Regex("\\b(home|feed|main\\s+page)\\b").containsMatchIn(q) -> TargetIntent.HomeFeed
+            Regex("\\b(notifications?|activity|alerts?)\\b").containsMatchIn(q) -> TargetIntent.Notifications
+            else -> AppNavigationIntent.inferDestination(query)?.let(::intentForDestination)
         }
     }
 
@@ -445,5 +507,53 @@ object ScreenRecovery {
         )
         InstagramMatcher.TargetIntent.HomeFeed,
         InstagramMatcher.TargetIntent.Notifications -> setOf(InstagramMatcher.InstagramScreenState.HomeFeed)
+    }
+
+    /** Verifies fresh screen state after an Instagram navigation step. */
+    fun verifyDestinationReached(
+        expectedIntent: InstagramMatcher.TargetIntent,
+        elements: List<ScreenElement>,
+        meta: Map<Int, ControlService.NodeMeta>,
+        screenState: ScreenState? = null,
+        screenHeightPx: Int = 0,
+        retryCount: Int = 0,
+    ): AgentActionResult {
+        val currentScreen = InstagramMatcher.detectScreen(elements, meta, screenHeightPx)
+        val expectedDest = InstagramMatcher.destinationForIntent(expectedIntent)?.name ?: expectedIntent.name
+        val actualDest = InstagramMatcher.destinationForScreen(currentScreen)?.name ?: currentScreen.name
+
+        val reached = when (expectedIntent) {
+            InstagramMatcher.TargetIntent.Messages -> currentScreen == InstagramMatcher.InstagramScreenState.DirectInbox ||
+                currentScreen == InstagramMatcher.InstagramScreenState.DirectThread
+            InstagramMatcher.TargetIntent.Reels -> currentScreen == InstagramMatcher.InstagramScreenState.Reels
+            InstagramMatcher.TargetIntent.Profile -> currentScreen == InstagramMatcher.InstagramScreenState.Profile
+            InstagramMatcher.TargetIntent.HomeFeed -> currentScreen == InstagramMatcher.InstagramScreenState.HomeFeed
+            InstagramMatcher.TargetIntent.Search -> currentScreen == InstagramMatcher.InstagramScreenState.Search
+            InstagramMatcher.TargetIntent.Composer,
+            InstagramMatcher.TargetIntent.DmSend -> currentScreen == InstagramMatcher.InstagramScreenState.DirectThread
+            InstagramMatcher.TargetIntent.Create -> currentScreen == InstagramMatcher.InstagramScreenState.Create
+            InstagramMatcher.TargetIntent.Share -> currentScreen == InstagramMatcher.InstagramScreenState.ShareSheet
+            InstagramMatcher.TargetIntent.Notifications -> screenState?.containsText("Notifications") == true
+        }
+
+        return if (reached) {
+            AgentActionResult(
+                status = ActionStatus.SUCCESS,
+                message = "Instagram reached $expectedDest.",
+                expectedDestination = expectedDest,
+                actualDestination = actualDest,
+                retryCount = retryCount,
+                verifiedScreenState = screenState,
+            )
+        } else {
+            AgentActionResult(
+                status = ActionStatus.WRONG_SCREEN,
+                message = "Expected Instagram $expectedDest, but screen is $actualDest.",
+                expectedDestination = expectedDest,
+                actualDestination = actualDest,
+                retryCount = retryCount,
+                verifiedScreenState = screenState,
+            )
+        }
     }
 }

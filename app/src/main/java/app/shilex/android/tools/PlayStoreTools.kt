@@ -2,8 +2,10 @@ package app.shilex.android.tools
 
 import android.content.Intent
 import android.net.Uri
-import app.shilex.android.Branding
 import app.shilex.android.Diag
+import app.shilex.android.assistant.ActionStatus
+import app.shilex.android.assistant.AgentActionResult
+import app.shilex.android.assistant.InstalledAppChecker
 import app.shilex.android.control.ControlRules
 import app.shilex.android.control.ControlService
 import app.shilex.android.control.ScreenElement
@@ -11,6 +13,23 @@ import app.shilex.android.data.AutomationCategory
 import app.shilex.android.data.Settings as AppSettings
 import kotlinx.coroutines.delay
 import org.json.JSONObject
+
+/** Explicit Google Play Store automation workflow states. */
+enum class StoreFlowState {
+    IDLE,
+    CHECKING_INSTALLED,
+    OPENING_STORE,
+    SEARCHING,
+    WAITING_FOR_RESULTS,
+    RESULTS_VISIBLE,
+    OPENING_APP_PAGE,
+    APP_PAGE_VISIBLE,
+    INSTALL_CONFIRMATION,
+    INSTALLING,
+    VERIFYING_INSTALLATION,
+    COMPLETED,
+    FAILED
+}
 
 /**
  * Pure Google Play Store listing & button state recognizer (unit-tested without Android).
@@ -145,6 +164,36 @@ object PlayStoreMatcher {
         return ScreenDecision(ButtonState.None, reason = "No matching result for \"$requestedApp\" is visible yet.")
     }
 
+    /** Computes the explicit [StoreFlowState] for the current Play Store UI decision and progress. */
+    fun resolveFlowState(
+        decision: ScreenDecision,
+        alreadyInstalled: Boolean = false,
+        inPlayStore: Boolean = true,
+        hasSearchInput: Boolean = false,
+        searchSubmitted: Boolean = false,
+        tappedInstall: Boolean = false,
+        confirmedInstall: Boolean = false,
+        verifiedInstalledAfterAction: Boolean = false,
+        timedOut: Boolean = false,
+    ): StoreFlowState = when {
+        alreadyInstalled || verifiedInstalledAfterAction -> StoreFlowState.COMPLETED
+        decision.buttonState == ButtonState.PaidOrBlocked -> StoreFlowState.FAILED
+        timedOut -> StoreFlowState.FAILED
+        !inPlayStore -> StoreFlowState.OPENING_STORE
+        decision.buttonState == ButtonState.Open || decision.buttonState == ButtonState.Update -> StoreFlowState.COMPLETED
+        decision.buttonState == ButtonState.InstallingOrPending -> StoreFlowState.VERIFYING_INSTALLATION
+        decision.buttonState == ButtonState.Install -> when {
+            tappedInstall -> StoreFlowState.INSTALLING
+            confirmedInstall -> StoreFlowState.INSTALLING
+            else -> StoreFlowState.APP_PAGE_VISIBLE
+        }
+        decision.ambiguousListings.size > 1 -> StoreFlowState.RESULTS_VISIBLE
+        decision.matchedListingElement != null -> StoreFlowState.RESULTS_VISIBLE
+        searchSubmitted -> StoreFlowState.WAITING_FOR_RESULTS
+        hasSearchInput -> StoreFlowState.SEARCHING
+        else -> StoreFlowState.IDLE
+    }
+
     private fun rankMatchingListings(
         wantedCompact: String,
         wantedTokens: List<String>,
@@ -191,25 +240,55 @@ object PlayStoreTools {
 
         override fun declaration() = Schema.function(
             name,
-            "Searches Google Play Store for an app, verifies if it is already installed, checks the exact listing, and taps free Install when authorized. Stops for payments, age/account/parental verification, and never claims installed until verified.",
+            "Searches Google Play Store for an app, verifies via PackageManager if it is already installed, checks the exact listing, requests confirmation before free Install, and verifies installation afterward.",
             Schema.string("app_name", "Exact app name to find/install on Google Play Store.", required = true),
             Schema.string("action", "install (default) or open_listing.", choices = listOf("install", "open_listing")),
+            Schema.string("package_name", "Optional known verified package ID to check before opening Play Store. Never guess package IDs."),
         )
 
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
             val appName = args.text("app_name")
             if (appName.isEmpty()) return Results.failed("no_app", "Ask which app to look up on Google Play Store.")
             val action = args.text("action").ifEmpty { "install" }
+            val explicitPkg = args.text("package_name").takeIf { '.' in it }
 
-            // 1. Check live installed apps BEFORE touching Play Store
+            var flowState = StoreFlowState.CHECKING_INSTALLED
+            val installerChecker = InstalledAppChecker(host.context)
+            host.recoveryController.onDestinationChanged("playstore:$appName")
+
+            // 1. Check live installed apps via PackageManager BEFORE touching Play Store
+            if (explicitPkg != null && installerChecker.isInstalled(explicitPkg)) {
+                flowState = StoreFlowState.COMPLETED
+                val verified = AgentActionResult(
+                    status = ActionStatus.ALREADY_COMPLETED,
+                    message = "$appName ($explicitPkg) is already installed on this phone. Ask if the user wants to open it.",
+                    expectedDestination = explicitPkg,
+                    actualDestination = explicitPkg,
+                )
+                Diag.i("playstore: state=$flowState pkg=$explicitPkg")
+                return Results.done(verified.message)
+            }
+
             val beforeApps = InstalledAppsRegistry.apps(host.context, forceRefresh = true)
             val alreadyInstalled = AppCatalog.find(appName, beforeApps, includeNonLaunchable = false)
-            if (alreadyInstalled.any { AppCatalog.compactKey(it.label) == AppCatalog.compactKey(appName) }) {
-                val matched = alreadyInstalled.first()
-                return Results.done("${matched.label} (${matched.packageName}) is already installed on this phone. Ask if the user wants to open it.")
+            val exactMatched = alreadyInstalled.firstOrNull {
+                AppCatalog.compactKey(it.label) == AppCatalog.compactKey(appName) &&
+                    installerChecker.isInstalled(it.packageName)
+            }
+            if (exactMatched != null) {
+                flowState = StoreFlowState.COMPLETED
+                val verified = AgentActionResult(
+                    status = ActionStatus.ALREADY_COMPLETED,
+                    message = "${exactMatched.label} (${exactMatched.packageName}) is already installed on this phone. Ask if the user wants to open it.",
+                    expectedDestination = exactMatched.packageName,
+                    actualDestination = exactMatched.packageName,
+                )
+                Diag.i("playstore: state=$flowState pkg=${exactMatched.packageName}")
+                return Results.done(verified.message)
             }
 
             if (!AppSettings(host.context).isAutomationEnabled(AutomationCategory.PlayStoreNavigation)) {
+                flowState = StoreFlowState.FAILED
                 return Results.failed(
                     "automation_disabled",
                     "Play Store navigation is turned off in Settings → Permissions. Ask the user to enable it or install manually.",
@@ -234,12 +313,22 @@ object PlayStoreTools {
                     "Google Play Store will open on \"$appName\" after you speak so the user can check and tap Install.",
                 )
 
+            flowState = StoreFlowState.OPENING_STORE
             val knownPackagesBefore = beforeApps.map { it.packageName }.toSet()
             return host.openApp(
                 launchIntent,
                 "Google Play Store",
                 "Opening Google Play Store to check \"$appName\" and start installation if available.",
-            ) { automateInstall(control, host, appName, action == "install", knownPackagesBefore) }
+            ) {
+                automateInstall(
+                    service = control,
+                    host = host,
+                    appName = appName,
+                    wantInstall = action == "install",
+                    knownPackagesBefore = knownPackagesBefore,
+                    explicitPackage = explicitPkg,
+                )
+            }
         }
 
         private suspend fun automateInstall(
@@ -248,36 +337,69 @@ object PlayStoreTools {
             appName: String,
             wantInstall: Boolean,
             knownPackagesBefore: Set<String>,
+            explicitPackage: String?,
         ): String {
+            var flowState = StoreFlowState.OPENING_STORE
             if (!service.waitFor(ControlRules.PLAY_STORE_PACKAGE, WAIT_MS)) {
+                flowState = StoreFlowState.FAILED
+                Diag.w("playstore: state=$flowState reason=wait_timeout")
                 return "Google Play Store didn't open in time; ask the user to check Play Store."
             }
-            var clickedListing = false
+
+            val checker = InstalledAppChecker(host.context)
             var tappedInstall = false
+            var confirmedInstall = false
             var typedSearch = false
 
             repeat(POLL_STEPS) {
                 delay(STEP_DELAY_MS)
                 val snap = service.snapshot(allowPlayStore = true) ?: return@repeat
-                if (snap.packageName != ControlRules.PLAY_STORE_PACKAGE) return@repeat
+                if (snap.packageName != ControlRules.PLAY_STORE_PACKAGE) {
+                    flowState = StoreFlowState.OPENING_STORE
+                    return@repeat
+                }
+                host.recoveryController.onScreenChanged("${snap.packageName}:${snap.signature.take(32)}")
                 if (snap.sensitiveAuth) {
+                    flowState = StoreFlowState.FAILED
                     return "Google Play Store asked for password or account verification. Hand control to the user."
                 }
+
                 val decision = PlayStoreMatcher.analyzeScreen(appName, snap.elements)
+                val searchEl = PlayStoreMatcher.findSearchInput(snap.elements)
+                flowState = PlayStoreMatcher.resolveFlowState(
+                    decision = decision,
+                    alreadyInstalled = false,
+                    inPlayStore = true,
+                    hasSearchInput = searchEl != null,
+                    searchSubmitted = typedSearch,
+                    tappedInstall = tappedInstall,
+                    confirmedInstall = confirmedInstall,
+                    verifiedInstalledAfterAction = false,
+                )
+
                 when (decision.buttonState) {
-                    PlayStoreMatcher.ButtonState.PaidOrBlocked -> return decision.reason
+                    PlayStoreMatcher.ButtonState.PaidOrBlocked -> {
+                        flowState = StoreFlowState.FAILED
+                        return decision.reason
+                    }
                     PlayStoreMatcher.ButtonState.Open -> {
-                        val after = InstalledAppsRegistry.refresh(host.context)
-                        val found = AppCatalog.find(appName, after, includeNonLaunchable = true).firstOrNull()
-                        return if (found != null) {
-                            "${found.label} (${found.packageName}) is verified as installed on this phone."
-                        } else {
-                            "Google Play Store shows an Open button for \"$appName\"."
+                        flowState = StoreFlowState.VERIFYING_INSTALLATION
+                        val installed = findVerifiedInstalledApp(host, checker, appName, knownPackagesBefore, explicitPackage)
+                        if (installed != null) {
+                            flowState = StoreFlowState.COMPLETED
+                            return "Verified: ${installed.label} (${installed.packageName}) is installed on this phone."
                         }
+                        if (decision.isVerifiedInstalledUi) {
+                            flowState = StoreFlowState.COMPLETED
+                            return "Google Play Store shows \"$appName\" is installed (Open button visible)."
+                        }
+                        return "Google Play Store shows an Open button for \"$appName\"."
                     }
                     PlayStoreMatcher.ButtonState.InstallingOrPending -> {
-                        val newlyAdded = findNewlyInstalledApp(host, appName, knownPackagesBefore)
+                        flowState = StoreFlowState.VERIFYING_INSTALLATION
+                        val newlyAdded = findVerifiedInstalledApp(host, checker, appName, knownPackagesBefore, explicitPackage)
                         if (newlyAdded != null) {
+                            flowState = StoreFlowState.COMPLETED
                             return "Verified: ${newlyAdded.label} (${newlyAdded.packageName}) finished installing from Google Play Store."
                         }
                         if (!tappedInstall) {
@@ -285,47 +407,69 @@ object PlayStoreTools {
                         }
                     }
                     PlayStoreMatcher.ButtonState.Install -> {
+                        flowState = StoreFlowState.APP_PAGE_VISIBLE
                         if (!wantInstall) {
+                            flowState = StoreFlowState.COMPLETED
                             return "Opened the Google Play Store listing for \"$appName\". Ask the user if they want to tap Install."
                         }
-                        if (!tappedInstall) {
+                        val installActionId = "ps_install_${PlayStoreMatcher.normalize(appName)}"
+                        if (!tappedInstall && !host.recoveryController.shouldSkipDuplicate(installActionId, flowState.name, StoreFlowState.INSTALLING.name)) {
+                            flowState = StoreFlowState.INSTALL_CONFIRMATION
+                            if (!confirmedInstall) {
+                                confirmedInstall = service.overlay.confirm("Install \"$appName\" from Google Play Store")
+                                if (!confirmedInstall) {
+                                    flowState = StoreFlowState.FAILED
+                                    return "Installation of \"$appName\" was cancelled before tapping Install."
+                                }
+                            }
                             val node = decision.actionElement?.number?.let(service::node)
                             if (node != null && service.click(node)) {
                                 tappedInstall = true
+                                flowState = StoreFlowState.INSTALLING
                                 service.overlay.showActive()
-                                Diag.i("playstore: tapped Install for $appName")
+                                Diag.i("playstore: state=$flowState tapped Install for $appName")
                             }
                         }
                     }
                     PlayStoreMatcher.ButtonState.Update -> {
+                        flowState = StoreFlowState.COMPLETED
                         return "\"$appName\" is already on this phone with an Update available in Google Play Store."
                     }
                     PlayStoreMatcher.ButtonState.None -> {
                         if (decision.ambiguousListings.size > 1) {
+                            flowState = StoreFlowState.RESULTS_VISIBLE
                             val options = decision.ambiguousListings.take(3).joinToString(", ") { it.label }
                             return "Multiple Play Store listings match \"$appName\" ($options). Ask the user which one to open."
                         }
-                        if (!clickedListing && decision.matchedListingElement != null) {
-                            val node = service.node(decision.matchedListingElement.number)
+                        val listingEl = decision.matchedListingElement
+                        val listingActionId = "ps_open_listing_${listingEl?.number ?: 0}"
+                        if (listingEl != null &&
+                            !host.recoveryController.shouldSkipDuplicate(listingActionId, flowState.name, StoreFlowState.OPENING_APP_PAGE.name)
+                        ) {
+                            val node = service.node(listingEl.number)
                             if (node != null && service.click(node)) {
-                                clickedListing = true
-                                Diag.i("playstore: opened listing ${decision.matchedListingElement.label}")
+                                flowState = StoreFlowState.OPENING_APP_PAGE
+                                Diag.i("playstore: state=$flowState opened listing ${listingEl.label}")
                             }
-                        } else if (!typedSearch) {
-                            val searchEl = PlayStoreMatcher.findSearchInput(snap.elements)
-                            val searchNode = searchEl?.number?.let(service::node)
+                        } else if (!typedSearch && searchEl != null &&
+                            !host.recoveryController.shouldSkipDuplicate("ps_search_${PlayStoreMatcher.normalize(appName)}", flowState.name, StoreFlowState.WAITING_FOR_RESULTS.name)
+                        ) {
+                            val searchNode = service.node(searchEl.number)
                             if (searchNode != null) {
+                                flowState = StoreFlowState.SEARCHING
                                 if (searchNode.isEditable) {
                                     if (service.type(searchNode, appName, submitIme = true)) {
                                         typedSearch = true
-                                        Diag.i("playstore: typed query $appName")
+                                        flowState = StoreFlowState.WAITING_FOR_RESULTS
+                                        Diag.i("playstore: state=$flowState typed query $appName")
                                     }
                                 } else if (service.click(searchNode)) {
                                     delay(500)
                                     service.focusedField()?.let { field ->
                                         if (service.type(field, appName, submitIme = true)) {
                                             typedSearch = true
-                                            Diag.i("playstore: opened search & typed $appName")
+                                            flowState = StoreFlowState.WAITING_FOR_RESULTS
+                                            Diag.i("playstore: state=$flowState opened search & typed $appName")
                                         }
                                     }
                                 }
@@ -335,27 +479,38 @@ object PlayStoreTools {
                 }
             }
 
-            val newlyAdded = findNewlyInstalledApp(host, appName, knownPackagesBefore)
+            flowState = StoreFlowState.VERIFYING_INSTALLATION
+            val newlyAdded = findVerifiedInstalledApp(host, checker, appName, knownPackagesBefore, explicitPackage)
             if (newlyAdded != null) {
+                flowState = StoreFlowState.COMPLETED
                 return "Verified: ${newlyAdded.label} (${newlyAdded.packageName}) is now installed."
             }
             return if (tappedInstall) {
-                "Tapped Install for \"$appName\" in Google Play Store; download/installation is still in progress or awaiting Play Store confirmation."
+                "Tapped Install for \"$appName\" in Google Play Store; installation is still in progress and not yet verified by Android."
             } else {
-                "Opened Google Play Store search for \"$appName\", though JARVIS couldn't find an unambiguous free Install button automatically. Ask the user to check the listing."
+                flowState = StoreFlowState.FAILED
+                "Opened Google Play Store search for \"$appName\", though JARVIS couldn't verify an unambiguous free Install button automatically. Ask the user to check the listing."
             }
         }
 
-        private fun findNewlyInstalledApp(
+        private fun findVerifiedInstalledApp(
             host: ToolHost,
+            checker: InstalledAppChecker,
             appName: String,
             knownPackagesBefore: Set<String>,
+            explicitPackage: String?,
         ): InstalledAppInfo? {
+            if (explicitPackage != null && checker.isInstalled(explicitPackage)) {
+                val refreshed = InstalledAppsRegistry.refresh(host.context)
+                return refreshed.firstOrNull { it.packageName == explicitPackage }
+                    ?: InstalledAppInfo(label = appName, packageName = explicitPackage, launchable = true)
+            }
             val now = InstalledAppsRegistry.refresh(host.context)
             val newMatches = now.filter { it.packageName !in knownPackagesBefore }
-            return AppCatalog.find(appName, newMatches, includeNonLaunchable = true).firstOrNull()
+            val candidate = AppCatalog.find(appName, newMatches, includeNonLaunchable = true).firstOrNull()
                 ?: AppCatalog.find(appName, now, includeNonLaunchable = false)
                     .firstOrNull { AppCatalog.compactKey(it.label) == AppCatalog.compactKey(appName) }
+            return candidate?.takeIf { checker.isInstalled(it.packageName) }
         }
 
         private const val WAIT_MS = 8_000L

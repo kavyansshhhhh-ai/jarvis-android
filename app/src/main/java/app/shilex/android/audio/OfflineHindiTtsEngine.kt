@@ -42,12 +42,13 @@ class OfflineHindiTtsEngine(private val context: Context) {
     }
 
     fun isVoiceAvailable(voice: BundledHindiVoice): Boolean =
-        BundledHindiVoices.isModelBundled(appContext, voice)
+        VoiceClassifier.validateBundledVoice(voice).isValid &&
+            BundledHindiVoices.isModelBundled(appContext, voice)
 
     /**
      * Synthesizes [text] offline using the selected [voice] and streams 16-bit mono PCM chunks
      * to [onChunk] as each sentence completes, supporting instant cooperative cancellation via [isCancelled].
-     * Never throws; all initialization, filesystem, and JNI failures return [SynthesisOutcome.Failed].
+     * Never throws or aborts; all validation, initialization, filesystem, and JNI failures return [SynthesisOutcome.Failed].
      */
     fun synthesizeStreaming(
         voice: BundledHindiVoice,
@@ -56,6 +57,10 @@ class OfflineHindiTtsEngine(private val context: Context) {
         isCancelled: () -> Boolean,
         onChunk: (SynthesizedAudio) -> Unit,
     ): SynthesisOutcome {
+        val validation = VoiceClassifier.validateBundledVoice(voice)
+        if (!validation.isValid) {
+            return SynthesisOutcome.Failed(validation.reason)
+        }
         if (text.isBlank()) {
             return SynthesisOutcome.Failed("No Hindi text was provided to speak.")
         }
@@ -141,10 +146,12 @@ class OfflineHindiTtsEngine(private val context: Context) {
             if (isCancelled()) return SynthesisOutcome.Cancelled
 
             // Fallback per sentence in case callback wasn't invoked by this model backend
-            if (!sentenceEmitted && genResult.samples.isNotEmpty()) {
-                val outRate = genResult.sampleRate.takeIf { it in 8_000..192_000 } ?: engineRate
-                totalSamplesEmitted += genResult.samples.size
-                val audio = floatsToPcm16(genResult.samples, outRate)
+            val fallbackSamples = runCatching { genResult.samples }.getOrNull()
+            if (!sentenceEmitted && fallbackSamples != null && fallbackSamples.isNotEmpty()) {
+                val outRate = runCatching { genResult.sampleRate }.getOrDefault(engineRate)
+                    .takeIf { it in 8_000..192_000 } ?: engineRate
+                totalSamplesEmitted += fallbackSamples.size
+                val audio = floatsToPcm16(fallbackSamples, outRate)
                 if (audio.rawPeak > maxRawPeak) maxRawPeak = audio.rawPeak
                 onChunk(audio)
             }
@@ -201,17 +208,18 @@ class OfflineHindiTtsEngine(private val context: Context) {
             return EngineLoadResult.Error("Not enough free storage on this phone to prepare ${voice.displayName}.")
         }
 
-        val espeakDirPath = if (voice.engineKind != BundledEngineKind.Supertonic) {
+        val espeakDir: File? = if (voice.engineKind != BundledEngineKind.Supertonic) {
             when (val res = ensureEspeakDataDir(isCancelled)) {
-                is DirResult.Ready -> res.dir.absolutePath
+                is DirResult.Ready -> res.dir
                 is DirResult.Cancelled -> return EngineLoadResult.Cancelled
                 is DirResult.Error -> return EngineLoadResult.Error(res.message)
             }
         } else {
-            ""
+            null
         }
 
         val resolvedPaths = mutableMapOf<String, String>()
+        val extractedFiles = mutableMapOf<String, File>()
         for (assetPath in requiredAssetPaths) {
             if (isCancelled()) return EngineLoadResult.Cancelled
             val extracted = extractAssetFileIfNeeded(assetPath, isCancelled)
@@ -221,18 +229,28 @@ class OfflineHindiTtsEngine(private val context: Context) {
                     EngineLoadResult.Error("Could not extract voice files for ${voice.displayName}.")
                 }
             resolvedPaths[assetPath] = extracted.absolutePath
+            extractedFiles[assetPath] = extracted
         }
 
         if (isCancelled()) return EngineLoadResult.Cancelled
 
-        val config = buildFileConfig(voice, resolvedPaths, espeakDirPath)
+        // Pre-validate every native path before calling OfflineTts(null, config), because Sherpa-ONNX
+        // C++ calls SHERPA_ONNX_EXIT(-1) (terminating the app process) if any file or espeak table is invalid.
+        val integrityError = validateExtractedFiles(voice, extractedFiles, espeakDir)
+        if (integrityError != null) {
+            Diag.w("offline-tts: pre-init integrity check failed for ${voice.id}: $integrityError")
+            invalidateExtractedMarkers(extractedFiles.values, espeakDir)
+            return EngineLoadResult.Error(integrityError)
+        }
+
+        val config = buildFileConfig(voice, resolvedPaths, espeakDir?.absolutePath.orEmpty())
         val created = try {
             // IMPORTANT: assetManager MUST be null when passing filesystem paths to Sherpa-ONNX,
             // otherwise native JNI calls SHERPA_ONNX_EXIT(-1) on any absolute path.
             OfflineTts(assetManager = null, config = config)
         } catch (t: Throwable) {
-            Diag.w("offline-tts: init failed for ${voice.id}: ${t.message}")
-            return EngineLoadResult.Error("Could not load ${voice.displayName}: ${t.message ?: "model init failed"}")
+            Diag.w("offline-tts: init failed for ${voice.id}: ${t.javaClass.simpleName}: ${t.message}")
+            return EngineLoadResult.Error("Could not load ${voice.displayName}: ${t.message ?: "native voice init failed"}")
         }
 
         if (isCancelled()) {
@@ -240,16 +258,32 @@ class OfflineHindiTtsEngine(private val context: Context) {
             return EngineLoadResult.Cancelled
         }
 
+        val loadedRate = runCatching { created.sampleRate() }.getOrDefault(0)
+        if (loadedRate !in 8_000..192_000) {
+            runCatching { created.free() }
+            return EngineLoadResult.Error("${voice.displayName} initialized with an invalid audio rate.")
+        }
+
         activeTts = created
         activeKey = key
-        Diag.i("offline-tts: loaded ${voice.id} (${voice.engineKind}) sr=${runCatching { created.sampleRate() }.getOrDefault(voice.sampleRate)}")
+        Diag.i("offline-tts: loaded ${voice.id} (${voice.engineKind}) sr=$loadedRate")
         return EngineLoadResult.Loaded(created)
+    }
+
+    private fun invalidateExtractedMarkers(files: Collection<File>, espeakDir: File?) {
+        files.forEach { file ->
+            runCatching { File(file.parentFile, "${file.name}.ready-v1").delete() }
+        }
+        espeakDir?.let { dir ->
+            runCatching { File(dir, ESPEAK_READY_STAMP).delete() }
+        }
     }
 
     private fun requiredAssetsFor(voice: BundledHindiVoice): List<String> = when (voice.engineKind) {
         BundledEngineKind.PiperVits -> listOf(
             voice.modelAssetPath,
             voice.tokensAssetPath,
+            voice.configAssetPath,
         )
         BundledEngineKind.KokoroMultiLang -> listOf(
             voice.modelAssetPath,
@@ -332,19 +366,30 @@ class OfflineHindiTtsEngine(private val context: Context) {
 
     private fun ensureEspeakDataDir(isCancelled: () -> Boolean): DirResult {
         val targetDir = File(appContext.filesDir, "tts/espeak-ng-data")
-        val stamp = File(targetDir, ".ready-v2")
-        val marker = File(targetDir, "hi_dict")
-        val phontab = File(targetDir, "phontab")
-        if (stamp.exists() && marker.exists() && phontab.exists()) {
+        val stamp = File(targetDir, ESPEAK_READY_STAMP)
+        val hasAllRequired = BundledHindiVoices.REQUIRED_ESPEAK_FILES.all { rel ->
+            val f = File(targetDir, rel)
+            f.exists() && f.isFile && f.length() > 0L
+        }
+        if (stamp.exists() && hasAllRequired) {
             return DirResult.Ready(targetDir)
         }
         return try {
+            if (stamp.exists()) stamp.delete()
             val copied = copyAssetDir(BundledHindiVoices.ESPEAK_DATA_ASSET_DIR, targetDir, isCancelled)
             if (!copied || isCancelled()) {
                 DirResult.Cancelled
             } else {
-                stamp.writeText("ok")
-                DirResult.Ready(targetDir)
+                val missingAfter = BundledHindiVoices.REQUIRED_ESPEAK_FILES.firstOrNull { rel ->
+                    val f = File(targetDir, rel)
+                    !f.exists() || !f.isFile || f.length() <= 0L
+                }
+                if (missingAfter != null) {
+                    DirResult.Error("Hindi phonemizer table '$missingAfter' is missing or incomplete.")
+                } else {
+                    stamp.writeText("ok")
+                    DirResult.Ready(targetDir)
+                }
             }
         } catch (t: Throwable) {
             Diag.w("offline-tts: failed copying espeak-ng-data: ${t.message}")
@@ -383,6 +428,7 @@ class OfflineHindiTtsEngine(private val context: Context) {
             return destFile
         }
         return try {
+            if (readyMarker.exists()) readyMarker.delete()
             if (!copyAssetAtomic(assetPath, destFile, isCancelled) || isCancelled()) {
                 null
             } else {
@@ -439,6 +485,65 @@ class OfflineHindiTtsEngine(private val context: Context) {
     internal companion object {
         private const val SUPERTONIC_NUM_STEPS = 5
         private const val MIN_AUDIBLE_PEAK = 1e-6f
+        private const val ESPEAK_READY_STAMP = ".ready-v3"
+
+        /**
+         * Verifies that every required native model, tokens, config, and espeak-ng-data file exists
+         * cleanly on disk before invoking JNI `OfflineTts` (preventing native `SHERPA_ONNX_EXIT` aborts).
+         */
+        internal fun validateExtractedFiles(
+            voice: BundledHindiVoice,
+            paths: Map<String, File>,
+            espeakDir: File?,
+        ): String? {
+            val required = when (voice.engineKind) {
+                BundledEngineKind.PiperVits -> listOf(
+                    voice.modelAssetPath,
+                    voice.tokensAssetPath,
+                )
+                BundledEngineKind.KokoroMultiLang -> listOf(
+                    voice.modelAssetPath,
+                    voice.voicesAssetPath,
+                    voice.tokensAssetPath,
+                )
+                BundledEngineKind.Supertonic -> listOf(
+                    voice.durationPredictorAssetPath,
+                    voice.textEncoderAssetPath,
+                    voice.vectorEstimatorAssetPath,
+                    voice.vocoderAssetPath,
+                    voice.ttsJsonAssetPath,
+                    voice.unicodeIndexerAssetPath,
+                    voice.voiceStyleAssetPath,
+                )
+            }
+            for (assetPath in required) {
+                val f = paths[assetPath]
+                if (f == null || !f.exists() || !f.isFile || f.length() <= 0L) {
+                    return "Voice file '$assetPath' is missing or empty for ${voice.displayName}."
+                }
+            }
+            if (voice.engineKind != BundledEngineKind.Supertonic) {
+                if (espeakDir == null || !espeakDir.exists() || !espeakDir.isDirectory) {
+                    return "Hindi phonemizer directory is missing for ${voice.displayName}."
+                }
+                for (rel in BundledHindiVoices.REQUIRED_ESPEAK_FILES) {
+                    val f = File(espeakDir, rel)
+                    if (!f.exists() || !f.isFile || f.length() <= 0L) {
+                        return "Hindi phonemizer file '$rel' is missing or corrupt."
+                    }
+                }
+            } else {
+                val indexer = paths[voice.unicodeIndexerAssetPath]
+                if (indexer == null || indexer.length() % 4L != 0L) {
+                    return "Invalid unicode indexer file for ${voice.displayName}."
+                }
+                val style = paths[voice.voiceStyleAssetPath]
+                if (style == null || style.length() < 32L) {
+                    return "Invalid voice style file for ${voice.displayName}."
+                }
+            }
+            return null
+        }
 
         internal fun floatsToPcm16(samples: FloatArray, sampleRate: Int): SynthesizedAudio {
             val buf = ByteBuffer.allocate(samples.size * 2).order(ByteOrder.LITTLE_ENDIAN)
@@ -468,4 +573,3 @@ class OfflineHindiTtsEngine(private val context: Context) {
         }
     }
 }
-// Force source modification check: Tue Nov 17 06:01:38 PM UTC 2026

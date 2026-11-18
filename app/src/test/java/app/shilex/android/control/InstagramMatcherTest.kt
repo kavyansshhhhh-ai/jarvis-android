@@ -1,7 +1,12 @@
 package app.shilex.android.control
 
 import android.graphics.Rect
+import app.shilex.android.assistant.ActionStatus
+import app.shilex.android.assistant.AppDestination
+import app.shilex.android.assistant.ScreenElement as AssistantElement
+import app.shilex.android.assistant.ScreenState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -238,5 +243,55 @@ class InstagramMatcherTest {
         assertTrue(navDecision is ScreenRecovery.RecoveryDecision.NavigateToControl)
         assertEquals(3, (navDecision as ScreenRecovery.RecoveryDecision.NavigateToControl).elementNumber)
         assertEquals(InstagramMatcher.InstagramScreenState.HomeFeed, InstagramMatcher.detectScreen(feedElements, feedMeta, 2400))
+    }
+
+    @Test
+    fun resolvesHinglishDestinationsSkipsWhenAlreadyThereAndVerifiesPostAction() {
+        val navIntent = InstagramMatcher.resolveNavigationIntent("Instagram messages kholo")
+        assertEquals(AppDestination.MESSAGES, navIntent?.destination)
+        assertEquals(InstagramMatcher.TargetIntent.Messages, InstagramMatcher.intentForDestination(AppDestination.MESSAGES))
+
+        val inboxElements = listOf(
+            ScreenElement(1, "text", "Primary", ""),
+            ScreenElement(2, "text", "Requests", ""),
+        )
+        val inboxState = ScreenState(
+            packageName = InstagramMatcher.INSTAGRAM_PACKAGE,
+            elements = listOf(AssistantElement(text = "Primary"), AssistantElement(text = "Requests")),
+        )
+        assertTrue(
+            InstagramMatcher.isAlreadyAtDestination(
+                screenState = inboxState,
+                elements = inboxElements,
+                meta = emptyMap(),
+                destination = AppDestination.MESSAGES,
+            ),
+        )
+        assertFalse(
+            InstagramMatcher.isAlreadyAtDestination(
+                screenState = inboxState,
+                elements = inboxElements,
+                meta = emptyMap(),
+                destination = AppDestination.REELS,
+            ),
+        )
+
+        val verifiedOk = ScreenRecovery.verifyDestinationReached(
+            expectedIntent = InstagramMatcher.TargetIntent.Messages,
+            elements = inboxElements,
+            meta = emptyMap(),
+            screenState = inboxState,
+        )
+        assertEquals(ActionStatus.SUCCESS, verifiedOk.status)
+        assertTrue(verifiedOk.isSuccessful)
+
+        val verifiedWrong = ScreenRecovery.verifyDestinationReached(
+            expectedIntent = InstagramMatcher.TargetIntent.Reels,
+            elements = inboxElements,
+            meta = emptyMap(),
+            screenState = inboxState,
+        )
+        assertEquals(ActionStatus.WRONG_SCREEN, verifiedWrong.status)
+        assertFalse(verifiedWrong.isSuccessful)
     }
 }

@@ -50,6 +50,11 @@ data class TtsVoiceInfo(
         get() = (isBundled || isInstalled) && !isNetworkRequired
 }
 
+data class VoiceValidationResult(
+    val isValid: Boolean,
+    val reason: String = "",
+)
+
 /**
  * Genuine offline Hindi neural voice model bundled directly inside JARVIS.
  */
@@ -105,6 +110,14 @@ data class BundledHindiVoice(
 object BundledHindiVoices {
     const val ESPEAK_DATA_ASSET_DIR = "voices/espeak-ng-data"
     const val ESPEAK_MARKER_ASSET = "voices/espeak-ng-data/hi_dict"
+    val REQUIRED_ESPEAK_FILES = listOf(
+        "hi_dict",
+        "phontab",
+        "phondata",
+        "phonindex",
+        "intonations",
+        "lang/inc/hi",
+    )
 
     private const val SUPERTONIC_DURATION = "voices/supertonic/duration_predictor.int8.onnx"
     private const val SUPERTONIC_TEXT_ENCODER = "voices/supertonic/text_encoder.int8.onnx"
@@ -304,8 +317,37 @@ object BundledHindiVoices {
 
     fun find(voiceId: String?): BundledHindiVoice? = ALL.firstOrNull { it.id == voiceId }
 
+    fun validateCatalog(voices: List<BundledHindiVoice> = ALL): VoiceValidationResult {
+        if (voices.isEmpty()) return VoiceValidationResult(false, "Bundled voice catalog is empty.")
+        val ids = mutableSetOf<String>()
+        val speakerKeys = mutableSetOf<String>()
+        for (voice in voices) {
+            val single = VoiceClassifier.validateBundledVoice(voice)
+            if (!single.isValid) return single
+            if (!ids.add(voice.id)) {
+                return VoiceValidationResult(false, "Duplicate voice ID detected: ${voice.id}")
+            }
+            val speakerKey = "${voice.engineKind}:${voice.modelAssetPath}:${voice.speakerId}"
+            if (!speakerKeys.add(speakerKey)) {
+                return VoiceValidationResult(false, "Duplicate voice speaker mapping for ${voice.id}")
+            }
+        }
+        val femaleCount = voices.count { it.gender == VoiceGender.Female }
+        val maleCount = voices.count { it.gender == VoiceGender.Male }
+        if (femaleCount != HindiVoiceCatalog.TARGET_COUNT_PER_CATEGORY ||
+            maleCount != HindiVoiceCatalog.TARGET_COUNT_PER_CATEGORY
+        ) {
+            return VoiceValidationResult(
+                false,
+                "Expected 5 Female and 5 Male voices, found $femaleCount Female / $maleCount Male.",
+            )
+        }
+        return VoiceValidationResult(true)
+    }
+
     fun isModelBundled(context: Context?, voice: BundledHindiVoice): Boolean {
         if (!IS_OFFLINE_SYNTHESIS_INTEGRATED || context == null) return false
+        if (!VoiceClassifier.validateBundledVoice(voice).isValid) return false
         return when (voice.engineKind) {
             BundledEngineKind.Supertonic -> listOf(
                 voice.durationPredictorAssetPath,
@@ -320,15 +362,18 @@ object BundledHindiVoices {
             BundledEngineKind.PiperVits, BundledEngineKind.KokoroMultiLang -> {
                 val hasModel = assetExists(context, voice.modelAssetPath)
                 val hasTokens = assetExists(context, voice.tokensAssetPath)
-                val hasEspeak = assetExists(context, ESPEAK_MARKER_ASSET)
+                val hasConfig = voice.configAssetPath.isEmpty() || assetExists(context, voice.configAssetPath)
+                val hasEspeak = REQUIRED_ESPEAK_FILES.all { rel ->
+                    assetExists(context, "$ESPEAK_DATA_ASSET_DIR/$rel")
+                }
                 val hasVoices = voice.voicesAssetPath.isEmpty() || assetExists(context, voice.voicesAssetPath)
-                hasModel && hasTokens && hasEspeak && hasVoices
+                hasModel && hasTokens && hasConfig && hasEspeak && hasVoices
             }
         }
     }
 
     private fun assetExists(context: Context, assetPath: String): Boolean =
-        runCatching { context.assets.open(assetPath).use { true } }.getOrDefault(false)
+        runCatching { context.assets.open(assetPath).use { it.available() >= 0 } }.getOrDefault(false)
 
     fun availableForRuntime(context: Context?): List<TtsVoiceInfo> =
         ALL.filter { isModelBundled(context, it) }.map { it.toTtsVoiceInfo() }
@@ -387,6 +432,80 @@ object VoiceClassifier {
 
     /** Alias locked strictly to Hindi (India). */
     fun isSupportedLanguage(locale: Locale): Boolean = isHindiIndiaLocale(locale)
+
+    /**
+     * Strictly validates a [BundledHindiVoice]'s gender, locale, model/tokens/config paths,
+     * and sample rate before synthesis so mismatched or broken metadata fails explicitly
+     * instead of playing a wrong fallback voice or crashing native JNI.
+     */
+    fun validateBundledVoice(voice: BundledHindiVoice): VoiceValidationResult {
+        if (voice.id.isBlank()) {
+            return VoiceValidationResult(false, "Voice ID cannot be blank.")
+        }
+        if (voice.displayName.isBlank()) {
+            return VoiceValidationResult(false, "Voice display name cannot be blank.")
+        }
+        if (voice.gender != VoiceGender.Female && voice.gender != VoiceGender.Male) {
+            return VoiceValidationResult(false, "${voice.displayName} is missing a verified Female/Male gender.")
+        }
+        if (!isHindiIndiaLocale(voice.locale)) {
+            return VoiceValidationResult(false, "${voice.displayName} is not a Hindi (India) voice.")
+        }
+        if (!voice.lang.equals("hi", ignoreCase = true)) {
+            return VoiceValidationResult(false, "${voice.displayName} has unsupported language tag '${voice.lang}'.")
+        }
+        if (voice.sampleRate !in 8_000..192_000) {
+            return VoiceValidationResult(false, "${voice.displayName} has invalid sample rate ${voice.sampleRate}.")
+        }
+        if (voice.speakerId < 0) {
+            return VoiceValidationResult(false, "${voice.displayName} has invalid speaker ID ${voice.speakerId}.")
+        }
+        if (!voice.modelAssetPath.endsWith(".onnx")) {
+            return VoiceValidationResult(false, "${voice.displayName} is missing an ONNX model path.")
+        }
+        if (voice.tokensAssetPath.isBlank() || voice.configAssetPath.isBlank()) {
+            return VoiceValidationResult(false, "${voice.displayName} is missing required config or token files.")
+        }
+        when (voice.engineKind) {
+            BundledEngineKind.PiperVits -> {
+                if (!voice.configAssetPath.endsWith(".json")) {
+                    return VoiceValidationResult(false, "${voice.displayName} is missing its .onnx.json config.")
+                }
+            }
+            BundledEngineKind.KokoroMultiLang -> {
+                if (voice.voicesAssetPath.isBlank()) {
+                    return VoiceValidationResult(false, "${voice.displayName} is missing voices.bin.")
+                }
+            }
+            BundledEngineKind.Supertonic -> {
+                val missing = listOf(
+                    voice.durationPredictorAssetPath,
+                    voice.textEncoderAssetPath,
+                    voice.vectorEstimatorAssetPath,
+                    voice.vocoderAssetPath,
+                    voice.ttsJsonAssetPath,
+                    voice.unicodeIndexerAssetPath,
+                    voice.voiceStyleAssetPath,
+                ).any { it.isBlank() }
+                if (missing) {
+                    return VoiceValidationResult(false, "${voice.displayName} is missing Supertonic model files.")
+                }
+            }
+        }
+        return VoiceValidationResult(true)
+    }
+
+    /** Validates a catalog [TtsVoiceInfo] entry for Hindi (India) & explicit gender metadata. */
+    fun validateVoiceInfo(voice: TtsVoiceInfo): VoiceValidationResult {
+        if (voice.id.isBlank()) return VoiceValidationResult(false, "Voice ID cannot be blank.")
+        if (voice.gender != VoiceGender.Female && voice.gender != VoiceGender.Male) {
+            return VoiceValidationResult(false, "${voice.displayName} lacks verified gender metadata.")
+        }
+        if (!isHindiIndiaLocale(voice.locale)) {
+            return VoiceValidationResult(false, "${voice.displayName} must use locale hi-IN.")
+        }
+        return VoiceValidationResult(true)
+    }
 
     /**
      * Automatically identifies gender from reliable voice feature metadata only.

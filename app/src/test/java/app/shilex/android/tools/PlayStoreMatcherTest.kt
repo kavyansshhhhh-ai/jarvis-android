@@ -107,5 +107,45 @@ class PlayStoreMatcherTest {
         val ambiguousDecision = PlayStoreMatcher.analyzeScreen("LastWave", searchElements)
         assertEquals(PlayStoreMatcher.ButtonState.None, ambiguousDecision.buttonState)
         assertEquals(2, ambiguousDecision.ambiguousListings.size)
+        assertEquals(
+            StoreFlowState.RESULTS_VISIBLE,
+            PlayStoreMatcher.resolveFlowState(ambiguousDecision),
+        )
+    }
+
+    @Test
+    fun storeFlowStateTransitionsCoverInstallVerificationAndBlockedCases() {
+        val installDecision = PlayStoreMatcher.analyzeScreen(
+            "Signal",
+            listOf(
+                ScreenElement(1, "text", "Signal Private Messenger", ""),
+                ScreenElement(2, "button", "Install", ""),
+            ),
+        )
+        assertEquals(
+            StoreFlowState.APP_PAGE_VISIBLE,
+            PlayStoreMatcher.resolveFlowState(installDecision),
+        )
+        assertEquals(
+            StoreFlowState.INSTALLING,
+            PlayStoreMatcher.resolveFlowState(installDecision, confirmedInstall = true),
+        )
+        assertEquals(
+            StoreFlowState.COMPLETED,
+            PlayStoreMatcher.resolveFlowState(installDecision, verifiedInstalledAfterAction = true),
+        )
+
+        val blockedDecision = PlayStoreMatcher.analyzeScreen(
+            "Nova Launcher Prime",
+            listOf(ScreenElement(1, "button", "₹149.00 Buy", "")),
+        )
+        assertEquals(
+            StoreFlowState.FAILED,
+            PlayStoreMatcher.resolveFlowState(blockedDecision),
+        )
+        assertEquals(
+            StoreFlowState.COMPLETED,
+            PlayStoreMatcher.resolveFlowState(blockedDecision, alreadyInstalled = true),
+        )
     }
 }

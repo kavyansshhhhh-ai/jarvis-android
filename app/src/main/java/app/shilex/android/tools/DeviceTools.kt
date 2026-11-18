@@ -1,6 +1,8 @@
 package app.shilex.android.tools
 
 import app.shilex.android.audio.AudioStream
+import app.shilex.android.audio.VolumeController
+import app.shilex.android.audio.VolumeOutcome
 import app.shilex.android.local.LocalActions
 import app.shilex.android.local.LocalCommand
 import app.shilex.android.local.SystemPanelTarget
@@ -35,6 +37,18 @@ object DeviceTools {
             val stream = AudioStream.fromKey(args.text("stream"))
             val command = command(args.text("action"), args.optInt("percent", -1), stream)
                 ?: return Results.failed("bad_action", "Ask what to change: volume (0-100%), mute media, flashlight or battery.")
+            val volumeOutcome: VolumeOutcome? = when (command) {
+                is LocalCommand.SetVolume -> VolumeController(host.context).setPercent(command.percent, command.stream, showUi = true)
+                is LocalCommand.StepVolume -> VolumeController(host.context).step(command.up, command.stream, showUi = true)
+                is LocalCommand.Mute -> VolumeController(host.context).setMute(command.on, command.mediaOnly, showUi = true)
+                else -> null
+            }
+            if (volumeOutcome != null) {
+                return when (volumeOutcome) {
+                    is VolumeOutcome.Changed -> Results.done(volumeOutcome.message)
+                    is VolumeOutcome.Blocked -> Results.failed("volume_blocked", volumeOutcome.reason)
+                }
+            }
             val result = LocalActions(host.context).run(command)
             return Results.done(result.reply.ifEmpty { "Done." })
         }

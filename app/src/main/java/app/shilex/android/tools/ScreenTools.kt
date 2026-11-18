@@ -3,6 +3,10 @@ package app.shilex.android.tools
 import android.accessibilityservice.AccessibilityService
 import android.view.accessibility.AccessibilityNodeInfo
 import app.shilex.android.Branding
+import app.shilex.android.assistant.ActionStatus
+import app.shilex.android.assistant.AgentActionResult
+import app.shilex.android.assistant.AgentRecoveryController
+import app.shilex.android.assistant.ScreenState
 import app.shilex.android.control.ControlRules
 import app.shilex.android.control.ControlService
 import app.shilex.android.control.InstagramMatcher
@@ -187,6 +191,7 @@ object ScreenTools {
                 return accessibilityRestricted(snap.appLabel)
             }
             ActiveTaskContext.updateScreen(snap.appLabel, snap.signature.take(80))
+            host.recoveryController.onScreenChanged("${snap.packageName}:${snap.signature.take(32)}")
             val summary = if (snap.financeApp) ControlRules.extractTransactionSummary(snap.elements) else ""
             val hints = screenContextHints(snap)
             val body = ScreenText.describe(snap.appLabel, snap.elements, snap.more)
@@ -269,9 +274,35 @@ object ScreenTools {
             val (service, problem) = control()
             service ?: return problem!!
             val allowPs = allowPlayStore(host)
-            val resolved = target(service, args, allowPs) ?: return Results.failed(
+            val requestedLabel = args.text("label")
+            val explicitNumber = args.optInt("number", 0)
+            val preSnap = service.snapshot(allowPlayStore = allowPs)
+            if (preSnap != null) {
+                host.recoveryController.onScreenChanged("${preSnap.packageName}:${preSnap.signature.take(32)}")
+            }
+
+            // Short-circuit Instagram navigation commands when already at the requested destination.
+            if (preSnap != null && preSnap.packageName == InstagramMatcher.INSTAGRAM_PACKAGE && requestedLabel.isNotEmpty()) {
+                val navIntent = InstagramMatcher.inferIntent(requestedLabel)
+                val navDestination = navIntent?.let(InstagramMatcher::destinationForIntent)
+                val isNavDestinationIntent = navIntent != null && navIntent != InstagramMatcher.TargetIntent.Composer && navIntent != InstagramMatcher.TargetIntent.DmSend
+                if (isNavDestinationIntent && navDestination != null &&
+                    InstagramMatcher.isAlreadyAtDestination(preSnap.screenState, preSnap.elements, preSnap.meta, navDestination, preSnap.screenHeightPx)
+                ) {
+                    val alreadyResult = AgentActionResult(
+                        status = ActionStatus.ALREADY_COMPLETED,
+                        message = "Instagram is already on ${navDestination.name}; skipped duplicate tap.",
+                        expectedDestination = navDestination.name,
+                        actualDestination = navDestination.name,
+                        verifiedScreenState = preSnap.screenState,
+                    )
+                    return Results.done(alreadyResult.message)
+                }
+            }
+
+            val resolved = target(service, args, allowPs, host.recoveryController) ?: return Results.failed(
                 "not_found",
-                "No confident matching element on screen now. Call ui_read and pick an exact number (or use ui_tap_seen ONLY for unlabeled icons).",
+                "No confident matching accessible element on screen now. Call ui_read and pick an exact number (or use ui_tap_seen ONLY for unlabeled icons).",
             )
             resolved.second?.let { return it }
             val target = resolved.first!!
@@ -293,6 +324,19 @@ object ScreenTools {
             if (ControlRules.isCredentialAction(label, viewId, target.isPassword)) {
                 return sensitiveAuth(ScreenText.shorten(label.ifEmpty { "credential control" }))
             }
+
+            val igExpectedIntent = if (pkg == InstagramMatcher.INSTAGRAM_PACKAGE) {
+                InstagramMatcher.inferIntent(requestedLabel.ifEmpty { label })
+            } else {
+                null
+            }
+            val expectedDestKey = igExpectedIntent?.name ?: label
+            val currentScreenKey = "${pkg}:${preSnap?.signature?.take(24).orEmpty()}"
+            val actionId = if (explicitNumber > 0) "click:#$explicitNumber" else "click:${requestedLabel.lowercase()}"
+            if (host.recoveryController.shouldSkipDuplicate(actionId, currentScreenKey, expectedDestKey)) {
+                return Results.done("Skipped duplicate action on \"${ScreenText.shorten(label.ifEmpty { requestedLabel })}\" on the unchanged screen.")
+            }
+
             val summary = if (ControlRules.isFinanceApp(pkg)) ControlRules.extractTransactionSummary(service.lastElements()) else ""
             val risk = ControlRules.clickRisk(label, viewId, pkg)
             if (risk == ControlRules.Risk.Money) return payment(label, summary)
@@ -317,7 +361,6 @@ object ScreenTools {
                     "Screen switched to ${beforeSnap.appLabel} before tapping. Read the screen again and continue safely.",
                 )
             }
-            val explicitNumber = args.optInt("number", 0)
             val refreshedNode = (if (explicitNumber > 0) service.node(explicitNumber) else null) ?: target
             if (!refreshedNode.isEnabled) {
                 return Results.failed("disabled", "\"${ScreenText.shorten(label)}\" became disabled before tapping.")
@@ -329,13 +372,104 @@ object ScreenTools {
                     Results.failed("tap_failed", "The tap didn't go through.")
                 }
             }
+            if (igExpectedIntent != null &&
+                igExpectedIntent != InstagramMatcher.TargetIntent.Composer &&
+                igExpectedIntent != InstagramMatcher.TargetIntent.DmSend &&
+                igExpectedIntent != InstagramMatcher.TargetIntent.Share
+            ) {
+                return verifyAndRecoverInstagramClick(
+                    service = service,
+                    did = "Tapped \"${ScreenText.shorten(label)}\".",
+                    expectedIntent = igExpectedIntent,
+                    beforeSig = beforeSig,
+                    recovery = host.recoveryController,
+                    allowPlayStore = allowPs,
+                )
+            }
             return afterAction(service, "Tapped \"${ScreenText.shorten(label)}\".", beforeSig = beforeSig, allowPlayStore = allowPs)
+        }
+
+        private suspend fun verifyAndRecoverInstagramClick(
+            service: ControlService,
+            did: String,
+            expectedIntent: InstagramMatcher.TargetIntent,
+            beforeSig: String,
+            recovery: AgentRecoveryController,
+            allowPlayStore: Boolean,
+        ): JSONObject {
+            service.overlay.showActive()
+            delay(SETTLE_MS)
+            var snap = service.snapshot(allowPlayStore = allowPlayStore)
+                ?: return Results.failed("no_screen", "$did The screen couldn't be read afterward.")
+            var verification = ScreenRecovery.verifyDestinationReached(
+                expectedIntent = expectedIntent,
+                elements = snap.elements,
+                meta = snap.meta,
+                screenState = snap.screenState,
+                screenHeightPx = snap.screenHeightPx,
+                retryCount = recovery.currentRetryCount(),
+            )
+            while (verification.status == ActionStatus.WRONG_SCREEN &&
+                snap.packageName == InstagramMatcher.INSTAGRAM_PACKAGE &&
+                recovery.nextRetry()
+            ) {
+                val decision = ScreenRecovery.evaluateInstagramAction(
+                    intent = expectedIntent,
+                    elements = snap.elements,
+                    meta = snap.meta,
+                    screenHeightPx = snap.screenHeightPx,
+                    recoveryAttempts = recovery.currentRetryCount(),
+                )
+                when (decision) {
+                    is ScreenRecovery.RecoveryDecision.NavigateToControl -> {
+                        val node = service.node(decision.elementNumber) ?: break
+                        if (!service.click(node)) break
+                    }
+                    is ScreenRecovery.RecoveryDecision.RecoverBackAndRecheck -> {
+                        if (!service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) break
+                    }
+                    ScreenRecovery.RecoveryDecision.Proceed,
+                    is ScreenRecovery.RecoveryDecision.AskUser -> break
+                }
+                delay(SETTLE_MS)
+                snap = service.snapshot(allowPlayStore = allowPlayStore) ?: break
+                verification = ScreenRecovery.verifyDestinationReached(
+                    expectedIntent = expectedIntent,
+                    elements = snap.elements,
+                    meta = snap.meta,
+                    screenState = snap.screenState,
+                    screenHeightPx = snap.screenHeightPx,
+                    retryCount = recovery.currentRetryCount(),
+                )
+            }
+
+            if (snap.sensitiveAuth) {
+                return Results.done(
+                    "$did Now on a PIN, MPIN, OTP, CVV, or password screen in ${snap.appLabel}. " +
+                        "Stop here, never read or enter credentials, and call hand_to_user so the user finishes this step.",
+                )
+            }
+            ActiveTaskContext.updateScreen(snap.appLabel, snap.signature.take(80))
+            recovery.onScreenChanged("${snap.packageName}:${snap.signature.take(32)}")
+            val statusPrefix = if (verification.isSuccessful) {
+                "$did Verified: ${verification.message} "
+            } else {
+                "$did Verification note: ${verification.message} "
+            }
+            val transitionNote = when {
+                beforeSig.isEmpty() -> ""
+                snap.signature != beforeSig -> "(Screen updated.) "
+                else -> "(Screen stayed the same.) "
+            }
+            val hints = screenContextHints(snap)
+            return Results.done(statusPrefix + transitionNote + hints + "Screen now:\n" + ScreenText.describe(snap.appLabel, snap.elements, snap.more))
         }
 
         private suspend fun target(
             service: ControlService,
             args: JSONObject,
             allowPs: Boolean,
+            recovery: AgentRecoveryController,
         ): Pair<AccessibilityNodeInfo?, JSONObject?>? {
             val number = args.optInt("number", 0)
             if (number > 0) return service.node(number)?.let { it to null }
@@ -354,16 +488,22 @@ object ScreenTools {
             if (snap.packageName == InstagramMatcher.INSTAGRAM_PACKAGE) {
                 val igIntent = InstagramMatcher.inferIntent(label)
                 if (igIntent != null) {
-                    val recovery = ScreenRecovery.evaluateInstagramAction(igIntent, snap.elements, snap.meta, snap.screenHeightPx)
-                    if (recovery is ScreenRecovery.RecoveryDecision.RecoverBackAndRecheck) {
+                    val decision = ScreenRecovery.evaluateInstagramAction(
+                        intent = igIntent,
+                        elements = snap.elements,
+                        meta = snap.meta,
+                        screenHeightPx = snap.screenHeightPx,
+                        recoveryAttempts = recovery.currentRetryCount(),
+                    )
+                    if (decision is ScreenRecovery.RecoveryDecision.RecoverBackAndRecheck && recovery.nextRetry()) {
                         service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
                         delay(SETTLE_MS)
                         snap = service.snapshot(allowPlayStore = allowPs) ?: return null
                         if (snap.packageName != InstagramMatcher.INSTAGRAM_PACKAGE) {
                             return null to Results.failed("wrong_screen", "Left Instagram while recovering screen; call ui_read to re-orient.")
                         }
-                    } else if (recovery is ScreenRecovery.RecoveryDecision.AskUser) {
-                        return null to Results.failed("wrong_screen", recovery.reason)
+                    } else if (decision is ScreenRecovery.RecoveryDecision.AskUser) {
+                        return null to Results.failed("wrong_screen", decision.reason)
                     }
                     when (val res = InstagramMatcher.resolveControl(snap.elements, snap.meta, igIntent, snap.screenHeightPx)) {
                         is InstagramMatcher.MatchOutcome.Matched -> return service.node(res.element.number)?.let { it to null }

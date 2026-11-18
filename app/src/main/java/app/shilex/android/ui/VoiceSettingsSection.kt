@@ -377,7 +377,14 @@ private fun VoiceChoiceList(
                         color = if (isSelected) PureWhite else PureWhite.copy(alpha = 0.9f),
                         fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
                     )
-                    if (isSelected) {
+                    if (isPreviewing) {
+                        Text(
+                            text = "Playing preview…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CoralError,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    } else if (isSelected) {
                         Text(
                             text = "Selected",
                             style = MaterialTheme.typography.labelSmall,
