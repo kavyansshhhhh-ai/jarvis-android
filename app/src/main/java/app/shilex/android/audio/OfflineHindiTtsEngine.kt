@@ -66,103 +66,105 @@ class OfflineHindiTtsEngine(private val context: Context) {
         }
         if (isCancelled()) return SynthesisOutcome.Cancelled
 
-        val ttsResult = synchronized(lock) { ensureEngineLocked(voice, isCancelled) }
-        val tts = when (ttsResult) {
-            is EngineLoadResult.Loaded -> ttsResult.tts
-            is EngineLoadResult.Cancelled -> return SynthesisOutcome.Cancelled
-            is EngineLoadResult.Error -> return SynthesisOutcome.Failed(ttsResult.message)
-        }
-        if (isCancelled()) return SynthesisOutcome.Cancelled
-
-        val cleanSpeed = speed.coerceIn(0.5f, 2.0f)
-        val engineRate = runCatching { tts.sampleRate() }.getOrDefault(voice.sampleRate)
-            .takeIf { it in 8_000..192_000 } ?: voice.sampleRate
-
-        var totalSamplesEmitted = 0L
-        var maxRawPeak = 0f
-        val sentences = splitSentencesForLowLatency(text)
-
-        for (sentence in sentences) {
+        synchronized(lock) {
+            val ttsResult = ensureEngineLocked(voice, isCancelled)
+            val tts = when (ttsResult) {
+                is EngineLoadResult.Loaded -> ttsResult.tts
+                is EngineLoadResult.Cancelled -> return SynthesisOutcome.Cancelled
+                is EngineLoadResult.Error -> return SynthesisOutcome.Failed(ttsResult.message)
+            }
             if (isCancelled()) return SynthesisOutcome.Cancelled
-            var sentenceEmitted = false
-            val genResult = try {
-                if (voice.engineKind == BundledEngineKind.Supertonic) {
-                    val genConfig = GenerationConfig(
-                        silenceScale = 0.2f,
-                        speed = cleanSpeed,
-                        sid = voice.speakerId,
-                        referenceAudio = floatArrayOf(),
-                        referenceSampleRate = 0,
-                        referenceText = "",
-                        numSteps = SUPERTONIC_NUM_STEPS,
-                        extra = mapOf("lang" to voice.lang),
-                    )
-                    tts.generateWithConfigAndCallback(
-                        text = sentence,
-                        config = genConfig,
-                    ) { samples ->
-                        if (isCancelled()) {
-                            0
-                        } else {
-                            if (samples.isNotEmpty()) {
-                                sentenceEmitted = true
-                                totalSamplesEmitted += samples.size
-                                val audio = floatsToPcm16(samples, engineRate)
-                                if (audio.rawPeak > maxRawPeak) maxRawPeak = audio.rawPeak
-                                onChunk(audio)
+
+            val cleanSpeed = speed.coerceIn(0.5f, 2.0f)
+            val engineRate = runCatching { tts.sampleRate() }.getOrDefault(voice.sampleRate)
+                .takeIf { it in 8_000..192_000 } ?: voice.sampleRate
+
+            var totalSamplesEmitted = 0L
+            var maxRawPeak = 0f
+            val sentences = splitSentencesForLowLatency(text)
+
+            for (sentence in sentences) {
+                if (isCancelled()) return SynthesisOutcome.Cancelled
+                var sentenceEmitted = false
+                val genResult = try {
+                    if (voice.engineKind == BundledEngineKind.Supertonic) {
+                        val genConfig = GenerationConfig(
+                            silenceScale = 0.2f,
+                            speed = cleanSpeed,
+                            sid = voice.speakerId,
+                            referenceAudio = floatArrayOf(),
+                            referenceSampleRate = 0,
+                            referenceText = "",
+                            numSteps = SUPERTONIC_NUM_STEPS,
+                            extra = mapOf("lang" to voice.lang),
+                        )
+                        tts.generateWithConfigAndCallback(
+                            text = sentence,
+                            config = genConfig,
+                        ) { samples ->
+                            if (isCancelled()) {
+                                0
+                            } else {
+                                if (samples.isNotEmpty()) {
+                                    sentenceEmitted = true
+                                    totalSamplesEmitted += samples.size
+                                    val audio = floatsToPcm16(samples, engineRate)
+                                    if (audio.rawPeak > maxRawPeak) maxRawPeak = audio.rawPeak
+                                    onChunk(audio)
+                                }
+                                1
                             }
-                            1
+                        }
+                    } else {
+                        tts.generateWithCallback(
+                            text = sentence,
+                            sid = voice.speakerId,
+                            speed = cleanSpeed,
+                        ) { samples ->
+                            if (isCancelled()) {
+                                0
+                            } else {
+                                if (samples.isNotEmpty()) {
+                                    sentenceEmitted = true
+                                    totalSamplesEmitted += samples.size
+                                    val audio = floatsToPcm16(samples, engineRate)
+                                    if (audio.rawPeak > maxRawPeak) maxRawPeak = audio.rawPeak
+                                    onChunk(audio)
+                                }
+                                1
+                            }
                         }
                     }
-                } else {
-                    tts.generateWithCallback(
-                        text = sentence,
-                        sid = voice.speakerId,
-                        speed = cleanSpeed,
-                    ) { samples ->
-                        if (isCancelled()) {
-                            0
-                        } else {
-                            if (samples.isNotEmpty()) {
-                                sentenceEmitted = true
-                                totalSamplesEmitted += samples.size
-                                val audio = floatsToPcm16(samples, engineRate)
-                                if (audio.rawPeak > maxRawPeak) maxRawPeak = audio.rawPeak
-                                onChunk(audio)
-                            }
-                            1
-                        }
+                } catch (t: Throwable) {
+                    Diag.w("offline-tts: synthesize failed for ${voice.id}: ${t.message}")
+                    return if (isCancelled()) {
+                        SynthesisOutcome.Cancelled
+                    } else {
+                        SynthesisOutcome.Failed("Could not synthesize audio for ${voice.displayName}.")
                     }
                 }
-            } catch (t: Throwable) {
-                Diag.w("offline-tts: synthesize failed for ${voice.id}: ${t.message}")
-                return if (isCancelled()) {
-                    SynthesisOutcome.Cancelled
-                } else {
-                    SynthesisOutcome.Failed("Could not synthesize audio for ${voice.displayName}.")
+
+                if (isCancelled()) return SynthesisOutcome.Cancelled
+
+                // Fallback per sentence in case callback wasn't invoked by this model backend
+                val fallbackSamples = runCatching { genResult.samples }.getOrNull()
+                if (!sentenceEmitted && fallbackSamples != null && fallbackSamples.isNotEmpty()) {
+                    val outRate = runCatching { genResult.sampleRate }.getOrDefault(engineRate)
+                        .takeIf { it in 8_000..192_000 } ?: engineRate
+                    totalSamplesEmitted += fallbackSamples.size
+                    val audio = floatsToPcm16(fallbackSamples, outRate)
+                    if (audio.rawPeak > maxRawPeak) maxRawPeak = audio.rawPeak
+                    onChunk(audio)
                 }
             }
 
             if (isCancelled()) return SynthesisOutcome.Cancelled
-
-            // Fallback per sentence in case callback wasn't invoked by this model backend
-            val fallbackSamples = runCatching { genResult.samples }.getOrNull()
-            if (!sentenceEmitted && fallbackSamples != null && fallbackSamples.isNotEmpty()) {
-                val outRate = runCatching { genResult.sampleRate }.getOrDefault(engineRate)
-                    .takeIf { it in 8_000..192_000 } ?: engineRate
-                totalSamplesEmitted += fallbackSamples.size
-                val audio = floatsToPcm16(fallbackSamples, outRate)
-                if (audio.rawPeak > maxRawPeak) maxRawPeak = audio.rawPeak
-                onChunk(audio)
+            if (totalSamplesEmitted <= 0L || maxRawPeak <= MIN_AUDIBLE_PEAK) {
+                Diag.w("offline-tts: produced empty or silent PCM for ${voice.id} (samples=$totalSamplesEmitted, peak=$maxRawPeak)")
+                return SynthesisOutcome.Failed("${voice.displayName} produced no audible speech samples.")
             }
+            return SynthesisOutcome.Success
         }
-
-        if (isCancelled()) return SynthesisOutcome.Cancelled
-        if (totalSamplesEmitted <= 0L || maxRawPeak <= MIN_AUDIBLE_PEAK) {
-            Diag.w("offline-tts: produced empty or silent PCM for ${voice.id} (samples=$totalSamplesEmitted, peak=$maxRawPeak)")
-            return SynthesisOutcome.Failed("${voice.displayName} produced no audible speech samples.")
-        }
-        return SynthesisOutcome.Success
     }
 
     fun release() {

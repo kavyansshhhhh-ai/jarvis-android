@@ -127,6 +127,8 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
     @Volatile private var lastActivity = 0L
     private var retries = 0
     private var watchdog: Job? = null
+    private var replyWaitJob: Job? = null
+    private var endAfterReplyJob: Job? = null
 
     // Timings for the diagnostic log (never the words themselves).
     private var connectAt = 0L
@@ -219,6 +221,11 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
         tools.reset()
         ControlService.instance?.overlay?.cancelPending()
         watchdog?.cancel()
+        watchdog = null
+        replyWaitJob?.cancel()
+        replyWaitJob = null
+        endAfterReplyJob?.cancel()
+        endAfterReplyJob = null
         mic.stop()
         client.close()
         speaker.flush()
@@ -303,10 +310,13 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
     /** Ends the session once the reply in progress has been spoken. */
     private fun endAfterReply() {
         musicAsked = true
-        scope.launch {
+        endAfterReplyJob?.cancel()
+        endAfterReplyJob = scope.launch {
             delay(300)
-            while (speaker.isAudible(tailMs = 0) || _state.value.phase == Phase.Connecting) delay(100)
-            if (wanted) {
+            while (isActive && wanted && (speaker.isAudible(tailMs = 0) || _state.value.phase == Phase.Connecting)) {
+                delay(100)
+            }
+            if (isActive && wanted) {
                 stop("music started")
             }
         }
@@ -316,6 +326,10 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
     fun interrupt(how: String = "tap") {
         if (_state.value.phase != Phase.Speaking && !speaker.isAudible(tailMs = 0)) return
         Diag.i("reply: stopped by $how")
+        replyWaitJob?.cancel()
+        replyWaitJob = null
+        endAfterReplyJob?.cancel()
+        endAfterReplyJob = null
         wave.watch(false)
         droppingReply = true
         speaker.flush()
@@ -424,6 +438,10 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
             LiveEvent.Interrupted -> {
                 // The server cut the old reply itself; audio after this is a new one.
                 Diag.i("reply: interrupted by the user's voice")
+                replyWaitJob?.cancel()
+                replyWaitJob = null
+                endAfterReplyJob?.cancel()
+                endAfterReplyJob = null
                 wave.watch(false)
                 droppingReply = false
                 replyStarted = false
@@ -438,6 +456,8 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
                 VoiceIndicator.onListening(0f)
             }
             LiveEvent.TurnComplete -> {
+                replyWaitJob?.cancel()
+                replyWaitJob = null
                 speaker.endReply()
                 val textToSpeak = lastAssistantTurnText.toString()
                 val receivedAudio = turnReceivedAudio
@@ -464,25 +484,28 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
                             }
                         },
                     ) {
-                        scope.launch {
-                            while (speaker.isAudible(tailMs = 0)) delay(100)
+                        replyWaitJob?.cancel()
+                        replyWaitJob = scope.launch {
+                            while (isActive && wanted && speaker.isAudible(tailMs = 0)) delay(100)
+                            if (!isActive || !wanted) return@launch
                             wave.watch(false)
-                            if (wanted && _state.value.phase == Phase.Speaking) {
+                            if (_state.value.phase == Phase.Speaking) {
                                 _state.update { it.copy(phase = Phase.Listening) }
                                 VoiceIndicator.onListening(0f)
                             }
-                            if (wanted) tools.openPending()
+                            tools.openPending()
                         }
                     }
                 } else {
-                    scope.launch {
-                        while (speaker.isAudible(tailMs = 0)) delay(100)
+                    replyWaitJob = scope.launch {
+                        while (isActive && wanted && speaker.isAudible(tailMs = 0)) delay(100)
+                        if (!isActive || !wanted) return@launch
                         wave.watch(false)
-                        if (wanted && _state.value.phase == Phase.Speaking) {
+                        if (_state.value.phase == Phase.Speaking) {
                             _state.update { it.copy(phase = Phase.Listening) }
                             VoiceIndicator.onListening(0f)
                         }
-                        if (wanted) tools.openPending()
+                        tools.openPending()
                     }
                 }
             }

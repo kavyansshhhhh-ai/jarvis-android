@@ -99,6 +99,7 @@ fun JarvisVoiceSubScreen(
 
     LifecycleResumeEffect(Unit) {
         assistant.refreshTtsVoices()
+        speakResponses = assistant.speakResponses
         rawSelectedVoiceId = assistant.ttsVoiceId
         genderFilter = assistant.ttsGenderFilter
         speechRate = assistant.ttsSpeechRate

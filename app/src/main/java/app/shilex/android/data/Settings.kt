@@ -103,6 +103,7 @@ class Settings(context: Context) {
     fun restoreDefaultTtsVoice() {
         prefs.edit()
             .remove("tts_voice_id")
+            .putString("tts_gender_filter", GENDER_FEMALE)
             .putFloat("tts_speech_rate", 1.0f)
             .putFloat("tts_pitch", 1.0f)
             .apply()
