@@ -160,6 +160,28 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
         _state.update { it.copy(hasKey = false) }
     }
 
+    fun sendTextMessage(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        _state.update {
+            it.copy(
+                phase = if (it.phase == Phase.Off) Phase.Listening else it.phase,
+                lines = transcript.add(fromUser = true, trimmed),
+            )
+        }
+        transcript.endTurn()
+        tools.userSpoke(trimmed)
+        if (wanted) {
+            if (_state.value.phase == Phase.Connecting) {
+                pendingText = trimmed
+            } else {
+                runCatching { client.send(LiveProtocol.userTextMessage(trimmed)) }
+            }
+        } else {
+            start(trimmed)
+        }
+    }
+
     /** Call only after the mic is allowed. [firstText], heard or typed, goes to Gemini as the user's turn. */
     fun start(firstText: String? = null) {
         if (firstText != null) tools.userSpoke(firstText)

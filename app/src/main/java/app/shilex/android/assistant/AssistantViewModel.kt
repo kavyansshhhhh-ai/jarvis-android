@@ -209,6 +209,8 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
 
     fun start() = session.start()
 
+    fun sendTextMessage(text: String) = session.sendTextMessage(text)
+
     fun stop() {
         actionRecovery.reset()
         local.stop()

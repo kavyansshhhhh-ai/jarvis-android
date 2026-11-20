@@ -1,6 +1,11 @@
 package app.shilex.android.ui
 
 import android.Manifest
+import android.content.Intent
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -31,13 +36,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,10 +59,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -89,7 +103,7 @@ private fun status(state: UiState, local: LocalPhase, wakeOn: Boolean): Status =
 }
 
 /**
- * AMOLED Liquid Glass Home Screen for JARVIS.
+ * AMOLED Liquid Glass Home Screen for JARVIS with permanent text chat & speech-to-text input.
  */
 @Composable
 fun HomeScreen(
@@ -108,8 +122,19 @@ fun HomeScreen(
     onSeeActivity: () -> Unit,
     favourites: List<LocalCommand> = emptyList(),
     voiceIndicator: app.shilex.android.wake.VoiceIndicatorSnapshot = app.shilex.android.wake.VoiceIndicatorSnapshot(),
+    onSendText: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    var inputText by rememberSaveable { mutableStateOf("") }
+    var isListeningSpeech by remember { mutableStateOf(false) }
+
+    val speechRecognizer = remember {
+        runCatching { SpeechRecognizer.createSpeechRecognizer(context) }.getOrNull()
+    }
+    DisposableEffect(speechRecognizer) {
+        onDispose { speechRecognizer?.destroy() }
+    }
+
     val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) onStart() else onMicDenied()
     }
@@ -129,9 +154,55 @@ fun HomeScreen(
             askMic.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
+
+    val startSpeechRecognition = {
+        val granted = PermissionRegistry.isGrantedNow(context, PermissionId.Microphone)
+        if (!granted) {
+            PermissionRegistry.markRequested(context, Manifest.permission.RECORD_AUDIO)
+            askMic.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            runCatching {
+                if (isListeningSpeech) {
+                    speechRecognizer?.stopListening()
+                    isListeningSpeech = false
+                } else {
+                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
+                        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                    }
+                    speechRecognizer?.setRecognitionListener(object : RecognitionListener {
+                        override fun onReadyForSpeech(params: Bundle?) { isListeningSpeech = true }
+                        override fun onBeginningOfSpeech() {}
+                        override fun onRmsChanged(rmsdB: Float) {}
+                        override fun onBufferReceived(buffer: ByteArray?) {}
+                        override fun onEndOfSpeech() { isListeningSpeech = false }
+                        override fun onError(error: Int) { isListeningSpeech = false }
+                        override fun onResults(results: Bundle?) {
+                            isListeningSpeech = false
+                            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            if (!matches.isNullOrEmpty()) {
+                                inputText = matches[0]
+                            }
+                        }
+                        override fun onPartialResults(partialResults: Bundle?) {
+                            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            if (!matches.isNullOrEmpty()) {
+                                inputText = matches[0]
+                            }
+                        }
+                        override fun onEvent(eventType: Int, params: Bundle?) {}
+                    })
+                    speechRecognizer?.startListening(intent)
+                    isListeningSpeech = true
+                }
+            }
+        }
+    }
+
     val now = status(state, localPhase, wakeOn)
     val problem = state.problem != null && !now.live
-    val inConversation = state.phase != Phase.Off && state.lines.isNotEmpty()
+    val inConversation = state.phase != Phase.Off || state.lines.isNotEmpty()
     val recentTask = task?.takeIf { now.live || System.currentTimeMillis() - it.at < TASK_SHOWN_MS }
 
     Column(
@@ -186,129 +257,234 @@ fun HomeScreen(
             Pill(now.badge, if (now.live) ElectricCyan else Muted)
         }
 
-        if (inConversation) {
-            // Conversation mode: compact Orb + live chat scroll
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Orb(
-                    phase = now.orb,
-                    level = level,
+        // Main content area: Scrollable conversation / standby view, leaving space above the bottom chat input bar
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f),
+        ) {
+            if (inConversation) {
+                // Conversation mode: compact Orb + live chat scroll
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Orb(
+                        phase = now.orb,
+                        level = level,
+                        modifier = Modifier
+                            .size(134.dp)
+                            .semantics { contentDescription = "${Branding.ASSISTANT_NAME}: ${now.title}" }
+                            .clickable(remember { MutableInteractionSource() }, indication = null) {
+                                when {
+                                    state.phase == Phase.Speaking || localPhase == LocalPhase.Speaking -> onInterrupt()
+                                    state.phase == Phase.Off && localPhase == LocalPhase.Idle -> startListening()
+                                    else -> Unit
+                                }
+                            },
+                    )
+                }
+
+                StatusHeader(now, problem)
+                recentTask?.let { TaskCard(it, Modifier.padding(bottom = 8.dp)) }
+                ChatConversation(state.lines, Modifier.fillMaxWidth().weight(1f))
+            } else {
+                // Standby / Quick action mode with virtualized smooth scrolling
+                val standbyListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+                LazyColumn(
+                    state = standbyListState,
                     modifier = Modifier
-                        .size(164.dp)
-                        .semantics { contentDescription = "${Branding.ASSISTANT_NAME}: ${now.title}" }
-                        .clickable(remember { MutableInteractionSource() }, indication = null) {
-                            when {
-                                state.phase == Phase.Speaking || localPhase == LocalPhase.Speaking -> onInterrupt()
-                                state.phase == Phase.Off && localPhase == LocalPhase.Idle -> startListening()
-                                else -> Unit
-                            }
-                        },
-                )
-            }
-
-            StatusHeader(now, problem)
-            recentTask?.let { TaskCard(it, Modifier.padding(bottom = 12.dp)) }
-            ChatConversation(state.lines, Modifier.fillMaxWidth().weight(1f))
-        } else {
-            // Standby / Quick action mode with virtualized smooth scrolling above action button & dock
-            val standbyListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
-            LazyColumn(
-                state = standbyListState,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentPadding = PaddingValues(bottom = 16.dp),
-            ) {
-                item(key = "home_orb") {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(top = 18.dp, bottom = 14.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        val orbInteraction = remember { MutableInteractionSource() }
-                        Orb(
-                            phase = now.orb,
-                            level = level,
-                            modifier = Modifier
-                                .size(226.dp)
-                                .semantics { contentDescription = "${Branding.ASSISTANT_NAME}: ${now.title}" }
-                                .clickable(orbInteraction, indication = null) {
-                                    when {
-                                        state.phase == Phase.Speaking || localPhase == LocalPhase.Speaking -> onInterrupt()
-                                        state.phase == Phase.Off && localPhase == LocalPhase.Idle -> startListening()
-                                        else -> Unit
-                                    }
-                                },
-                        )
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentPadding = PaddingValues(bottom = 12.dp),
+                ) {
+                    item(key = "home_orb") {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 14.dp, bottom = 10.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            val orbInteraction = remember { MutableInteractionSource() }
+                            Orb(
+                                phase = now.orb,
+                                level = level,
+                                modifier = Modifier
+                                    .size(200.dp)
+                                    .semantics { contentDescription = "${Branding.ASSISTANT_NAME}: ${now.title}" }
+                                    .clickable(orbInteraction, indication = null) {
+                                        when {
+                                            state.phase == Phase.Speaking || localPhase == LocalPhase.Speaking -> onInterrupt()
+                                            state.phase == Phase.Off && localPhase == LocalPhase.Idle -> startListening()
+                                            else -> Unit
+                                        }
+                                    },
+                            )
+                        }
                     }
-                }
 
-                item(key = "home_status") {
-                    StatusHeader(now, problem)
-                }
-
-                if (recentTask != null) {
-                    item(key = "home_task") {
-                        TaskCard(recentTask, Modifier.padding(bottom = 12.dp))
+                    item(key = "home_status") {
+                        StatusHeader(now, problem)
                     }
-                }
 
-                item(key = "home_quick") {
-                    QuickActions(onQuick, favourites)
-                }
+                    if (recentTask != null) {
+                        item(key = "home_task") {
+                            TaskCard(recentTask, Modifier.padding(bottom = 12.dp))
+                        }
+                    }
 
-                item(key = "home_recent") {
-                    Column {
-                        Spacer(Modifier.height(16.dp))
-                        RecentActivitySnippet(activity.take(2), onSeeActivity)
+                    item(key = "home_quick") {
+                        QuickActions(onQuick, favourites)
+                    }
+
+                    item(key = "home_recent") {
+                        Column {
+                            Spacer(Modifier.height(14.dp))
+                            RecentActivitySnippet(activity.take(2), onSeeActivity)
+                        }
                     }
                 }
             }
         }
 
-        // Floating Liquid Glass Action Button (Mic / Stop), anchored clearly above floating bottom capsule dock
-        Box(
-            Modifier
-                .fillMaxWidth()
+        // Permanent Message Input Bar at the bottom (anchored above navigation dock)
+        ChatInputBar(
+            text = inputText,
+            onTextChanged = { inputText = it },
+            onSend = {
+                val msg = inputText.trim()
+                if (msg.isNotEmpty()) {
+                    inputText = ""
+                    onSendText(msg)
+                }
+            },
+            onMicClick = { startSpeechRecognition() },
+            isListening = isListeningSpeech,
+            live = now.live,
+            onStopLive = onStop,
+            modifier = Modifier
                 .navigationBarsPadding()
-                .padding(top = 10.dp, bottom = 94.dp),
+                .padding(bottom = 80.dp),
+        )
+    }
+}
+
+@Composable
+private fun ChatInputBar(
+    text: String,
+    onTextChanged: (String) -> Unit,
+    onSend: () -> Unit,
+    onMicClick: () -> Unit,
+    isListening: Boolean,
+    live: Boolean,
+    onStopLive: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shape = RoundedCornerShape(28.dp)
+    val haptic = LocalHapticFeedback.current
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp)
+            .shadow(12.dp, shape, ambientColor = Color.Black, spotColor = Color.Black)
+            .clip(shape)
+            .background(GlassSurfaceGradient)
+            .border(1.dp, GlassBorderGradient, shape)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        val micInteraction = remember { MutableInteractionSource() }
+        Box(
+            modifier = Modifier
+                .glassPressScale(micInteraction)
+                .size(42.dp)
+                .clip(CircleShape)
+                .background(if (isListening) CoralError.copy(alpha = 0.25f) else Color(0x1EFFFFFF))
+                .border(0.8.dp, if (isListening) CoralError else Color(0x33FFFFFF), CircleShape)
+                .clickable(interactionSource = micInteraction, indication = null) {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onMicClick()
+                },
             contentAlignment = Alignment.Center,
         ) {
-            val live = now.live
-            val buttonShape = CircleShape
-            val micInteraction = remember { MutableInteractionSource() }
+            Icon(
+                imageVector = MicIcon,
+                contentDescription = if (isListening) "Listening..." else "Speech to text",
+                tint = if (isListening) CoralError else ElectricCyan,
+                modifier = Modifier.size(20.dp),
+            )
+        }
 
-            Box(
-                modifier = Modifier
-                    .glassPressScale(micInteraction)
-                    .size(72.dp)
-                    .shadow(
-                        elevation = if (live) 20.dp else 12.dp,
-                        shape = buttonShape,
-                        ambientColor = if (live) CoralError else ElectricCyan,
-                        spotColor = if (live) CoralError else ElectricCyan,
-                    )
-                    .clip(buttonShape)
-                    .background(if (live) LiveStopButtonGradient else TalkButtonGradient)
-                    .border(1.2.dp, ButtonRimGradient, buttonShape)
-                    .clickable(
-                        interactionSource = micInteraction,
-                        indication = null,
-                    ) { if (live) onStop() else startListening() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = if (live) Icons.Filled.Close else MicIcon,
-                    contentDescription = if (live) "Stop" else "Talk",
-                    tint = if (live) PureWhite else Color(0xFF001E26),
-                    modifier = Modifier.size(30.dp),
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 4.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            if (text.isEmpty()) {
+                Text(
+                    text = if (isListening) "Listening to speech..." else "Ask JARVIS or type message...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
                 )
             }
+            BasicTextField(
+                value = text,
+                onValueChange = onTextChanged,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = PureWhite),
+                cursorBrush = SolidColor(ElectricCyan),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = {
+                    if (text.isNotBlank()) {
+                        onSend()
+                    }
+                }),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        val sendInteraction = remember { MutableInteractionSource() }
+        val canSend = text.isNotBlank()
+        Box(
+            modifier = Modifier
+                .glassPressScale(sendInteraction)
+                .size(42.dp)
+                .clip(CircleShape)
+                .background(
+                    brush = if (live) LiveStopButtonGradient
+                    else if (canSend) TalkButtonGradient
+                    else SolidColor(Color(0x14FFFFFF)),
+                )
+                .border(
+                    0.8.dp,
+                    if (live) CoralError.copy(alpha = 0.6f)
+                    else if (canSend) ElectricCyan.copy(alpha = 0.6f)
+                    else Color(0x22FFFFFF),
+                    CircleShape,
+                )
+                .clickable(
+                    interactionSource = sendInteraction,
+                    indication = null,
+                ) {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    if (live) {
+                        onStopLive()
+                    } else if (canSend) {
+                        onSend()
+                    }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = if (live) Icons.Filled.Close else Icons.AutoMirrored.Filled.Send,
+                contentDescription = if (live) "Stop" else "Send",
+                tint = if (live) PureWhite else if (canSend) Color(0xFF001E26) else Muted,
+                modifier = Modifier.size(18.dp),
+            )
         }
     }
 }
@@ -334,7 +510,7 @@ private fun StatusHeader(now: Status, problem: Boolean) {
         color = if (problem) CoralError else Muted,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 4.dp, bottom = 14.dp),
+            .padding(top = 4.dp, bottom = 10.dp),
     )
 }
 
@@ -389,7 +565,7 @@ private fun QuickActions(onQuick: (LocalCommand) -> String, favourites: List<Loc
                 it,
                 style = MaterialTheme.typography.bodySmall,
                 color = ElectricCyan,
-                modifier = Modifier.padding(top = 10.dp, start = 6.dp),
+                modifier = Modifier.padding(top = 8.dp, start = 6.dp),
             )
         }
     }
@@ -443,7 +619,7 @@ private fun ChatConversation(lines: List<Line>, modifier: Modifier) {
     LazyColumn(
         modifier = modifier.padding(vertical = 4.dp),
         state = list,
-        contentPadding = PaddingValues(bottom = 14.dp),
+        contentPadding = PaddingValues(bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         items(lines, key = { it.id }) { line ->
@@ -455,7 +631,7 @@ private fun ChatConversation(lines: List<Line>, modifier: Modifier) {
                     Box(
                         Modifier
                             .clip(userShape)
-                            .background(UserChatBubbleGradient)
+                            .background(brush = UserChatBubbleGradient)
                             .border(1.dp, Color(0x66FFFFFF), userShape)
                             .padding(horizontal = 15.dp, vertical = 10.dp),
                     ) {

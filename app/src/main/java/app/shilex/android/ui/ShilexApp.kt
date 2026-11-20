@@ -264,6 +264,7 @@ private fun Content(
                     onSeeActivity = { setTab(Tab.Activity.ordinal) },
                     favourites = remember(activity.size) { assistant.favourites() },
                     voiceIndicator = voiceIndicator,
+                    onSendText = assistant::sendTextMessage,
                 )
                 Tab.Automations -> AutomationsScreen()
                 Tab.Activity -> ActivityScreen(activity, assistant::clearActivity)
