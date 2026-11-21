@@ -91,7 +91,9 @@ class ToolRunner(
     private class Pending(val intent: Intent, val label: String, val then: (suspend () -> String?)?)
 
     @Volatile private var pending: Pending? = null
-    @Volatile private var lastUserText: String = ""
+    @Volatile private var currentUserText: String = ""
+    private val deniedPermissionsThisSession = Collections.synchronizedSet(mutableSetOf<String>())
+    override val lastUserText: String get() = currentUserText
 
     fun declarations(): JSONArray = JSONArray().apply {
         tools.values.filter { Capabilities.of(it.name) != null }.forEach { put(it.declaration()) }
@@ -100,7 +102,7 @@ class ToolRunner(
     fun handle(calls: List<FunctionCall>) {
         scope.launch(Dispatchers.Default) {
             ControlService.instance?.foregroundPackage()?.takeIf { it.isNotEmpty() }?.let { pkg ->
-                recoveryController.onScreenChanged(pkg)
+                recoveryController.onForegroundPackageChanged(pkg)
             }
             val results = calls.map { call ->
                 // Only tools in the capability registry run; the model can't invent others.
@@ -125,7 +127,7 @@ class ToolRunner(
                         "Screen text was read this turn, so this needed the user's Allow tap and it wasn't given. " +
                             "Ask the user in your own words whether they want it; do it only if they say so.",
                     )
-                } else if (call.name == "open_web_search" && !BrowserLaunchGuard.isExplicitBrowserRequest(lastUserText)) {
+                } else if (call.name == "open_web_search" && !BrowserLaunchGuard.isExplicitBrowserRequest(currentUserText)) {
                     Diag.i("tool: blocked open_web_search because user didn't ask to open Chrome/browser")
                     Results.failed(
                         "internal_answer_only",
@@ -177,7 +179,8 @@ class ToolRunner(
     /** The user spoke or typed: their words lead again ([TurnTrust]) and may answer a reply read-back. */
     fun userSpoke(text: String = "") {
         if (text.isNotBlank()) {
-            lastUserText = text
+            currentUserText = text
+            ControlService.instance?.overlay?.resetCooldown()
             recoveryController.onNewUserCommand(text)
             AppNavigationIntent.fromCommand(text)?.let { nav ->
                 recoveryController.onDestinationChanged("${nav.packageName}:${nav.destination.name}")
@@ -239,7 +242,8 @@ class ToolRunner(
 
     fun reset() {
         pending = null
-        lastUserText = ""
+        currentUserText = ""
+        deniedPermissionsThisSession.clear()
         cancelled.clear()
         recoveryController.reset()
         trust.userSpoke()
@@ -282,7 +286,19 @@ class ToolRunner(
     override fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
+    override fun isPermissionDeniedInSession(permission: String): Boolean =
+        permission in deniedPermissionsThisSession
+
+    fun onPermissionResult(permission: String, granted: Boolean) {
+        if (granted) {
+            deniedPermissionsThisSession.remove(permission)
+        } else {
+            deniedPermissionsThisSession.add(permission)
+        }
+    }
+
     override fun requestPermission(permission: String) {
+        if (hasPermission(permission) || permission in deniedPermissionsThisSession) return
         askPermission(permission)
         // Android shows the prompt only on JARVIS's own screen; from the orb or the wake word, bring it up.
         if (!onScreen()) start(Intent(context, MainActivity::class.java))

@@ -12,6 +12,7 @@ import app.shilex.android.Branding
 import app.shilex.android.control.ControlService
 import app.shilex.android.control.WhatsAppCallMatcher
 import app.shilex.android.control.WhatsAppChatVerifier
+import app.shilex.android.control.WhatsAppDeleteMatcher
 import app.shilex.android.control.WhatsAppWorkflow
 import app.shilex.android.data.AutomationCategory
 import app.shilex.android.data.Settings as AppSettings
@@ -63,6 +64,7 @@ object CommsTools {
         WhatsAppOpenChat,
         WhatsAppReadChat,
         WhatsAppSearchContact,
+        WhatsAppDeleteMessage,
         WhatsAppCall,
         SmsSend,
     )
@@ -84,7 +86,7 @@ object CommsTools {
         )
 
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
-            val route = CallClassifier.classify(args.text("name"), args.text("channel"))
+            val route = CallClassifier.classify("${args.text("name")} ${host.lastUserText}", args.text("channel"))
             if (route != CallClassifier.Route.NormalPhone) {
                 return WhatsAppCall.executeCall(args, host, route == CallClassifier.Route.WhatsAppVideo)
             }
@@ -109,7 +111,9 @@ object CommsTools {
             val intent = if (hasCallPerm) {
                 Intent(Intent.ACTION_CALL, telUri)
             } else {
-                host.requestPermission(Manifest.permission.CALL_PHONE)
+                if (!host.isPermissionDeniedInSession(Manifest.permission.CALL_PHONE)) {
+                    host.requestPermission(Manifest.permission.CALL_PHONE)
+                }
                 Intent(Intent.ACTION_DIAL, telUri)
             }
 
@@ -124,7 +128,7 @@ object CommsTools {
             return host.openApp(
                 intent,
                 "Phone",
-                "Phone call permission isn't granted yet (asked on screen), so the Phone dialer is opening with ${to.name}; the user taps Call.",
+                "Phone call permission isn't granted yet, so the Phone dialer is opening with ${to.name}; the user taps Call.",
             )
         }
 
@@ -168,6 +172,8 @@ object CommsTools {
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
             val message = args.text("message")
             if (message.isEmpty()) return Results.failed("no_message", "Ask what the message should say.")
+            val waPkg = WhatsAppWorkflow.resolveInstalledPackage(host.context)
+                ?: return Results.failed("whatsapp_missing", "WhatsApp is not installed on this phone.")
             val effectiveArgs = injectRecipientFromContextIfMissing(args)
             handsFree(effectiveArgs, WHATSAPP)?.let { return it }
             val to = when (val r = Recipients.resolve(effectiveArgs, host, "message")) {
@@ -180,7 +186,7 @@ object CommsTools {
             ActiveTaskContext.beginTask(
                 task = "WhatsApp Message",
                 application = "WhatsApp",
-                appPackage = "com.whatsapp",
+                appPackage = waPkg,
                 recipient = to.name,
                 searchQuery = message,
                 executionStep = "Open WhatsApp chat",
@@ -188,7 +194,7 @@ object CommsTools {
             )
 
             val link = Uri.parse("https://api.whatsapp.com/send?phone=$digits&text=${Uri.encode(message)}")
-            val intent = Intent(Intent.ACTION_VIEW, link)
+            val intent = Intent(Intent.ACTION_VIEW, link).setPackage(waPkg)
             val service = ControlService.instance?.takeIf { !it.overlay.stopped }
             val autoSendAuthorized = AppSettings(host.context).isAutomationEnabled(AutomationCategory.WhatsAppMessages)
 
@@ -204,6 +210,7 @@ object CommsTools {
                         service = service,
                         recipient = to.name,
                         message = message,
+                        recipientPhoneDigits = digits,
                         skipInternalConfirm = autoSendAuthorized,
                     )
                 }
@@ -226,6 +233,8 @@ object CommsTools {
         )
 
         override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
+            val waPkg = WhatsAppWorkflow.resolveInstalledPackage(host.context)
+                ?: return Results.failed("whatsapp_missing", "WhatsApp is not installed on this phone.")
             val to = when (val r = Recipients.resolve(args, host, "open in WhatsApp")) {
                 is Recipients.Result.Found -> r
                 is Recipients.Result.Answer -> return r.json
@@ -235,15 +244,15 @@ object CommsTools {
             ActiveTaskContext.beginTask(
                 task = "WhatsApp Open Chat",
                 application = "WhatsApp",
-                appPackage = "com.whatsapp",
+                appPackage = waPkg,
                 recipient = to.name,
                 executionStep = "Open chat",
             )
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://api.whatsapp.com/send?phone=$digits"))
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://api.whatsapp.com/send?phone=$digits")).setPackage(waPkg)
             val service = ControlService.instance?.takeIf { !it.overlay.stopped }
             if (service != null) {
                 return host.openApp(intent, "WhatsApp", "Opening WhatsApp chat with ${to.name}.") {
-                    WhatsAppWorkflow.verifyChatOpened(service, to.name)
+                    WhatsAppWorkflow.verifyChatOpened(service, to.name, recipientPhoneDigits = digits)
                 }
             }
             return host.openApp(intent, "WhatsApp", "Opening WhatsApp chat with ${to.name}.")
@@ -272,7 +281,22 @@ object CommsTools {
             val headers = WhatsAppChatVerifier.extractHeaderNames(snap.elements, snap.meta)
             val chatTitle = headers.firstOrNull().orEmpty()
             if (chatTitle.isNotEmpty()) {
-                ActiveTaskContext.updateScreen("WhatsApp", "chat:$chatTitle")
+                val ctx = ActiveTaskContext.snapshot()
+                if (!ctx.isActive || ctx.currentRecipient.isEmpty()) {
+                    ActiveTaskContext.beginTask(
+                        task = "WhatsApp Chat",
+                        application = "WhatsApp",
+                        appPackage = snap.packageName,
+                        screen = "chat:$chatTitle",
+                        recipient = chatTitle,
+                    )
+                } else {
+                    ActiveTaskContext.updateScreen(
+                        application = "WhatsApp",
+                        appPackage = snap.packageName,
+                        screen = "chat:$chatTitle",
+                    )
+                }
             }
             val visibleLines = snap.elements
                 .filter { it.role != "field" && it.label.isNotBlank() }
@@ -300,6 +324,9 @@ object CommsTools {
             val query = args.text("name")
             if (query.isEmpty()) return Results.failed("no_name", "Ask which contact name to search for.")
             if (!host.hasPermission(ContactsReader.PERMISSION)) {
+                if (host.isPermissionDeniedInSession(ContactsReader.PERMISSION)) {
+                    return Results.failed("permission_denied", "Contacts permission was denied. Ask the user to enable Contacts in Settings or say the phone number.")
+                }
                 host.requestPermission(ContactsReader.PERMISSION)
                 return Results.needsPermission("Contacts")
             }
@@ -316,6 +343,110 @@ object CommsTools {
                 "Multiple contacts match \"$query\". Ask which one.",
                 matches.take(6).map { "${it.name} (${it.numbers.firstOrNull()?.number.orEmpty()})" },
             )
+        }
+    }
+
+    private object WhatsAppDeleteMessage : PhoneTool {
+        override val name = "whatsapp_delete_message"
+
+        override fun declaration() = Schema.function(
+            name,
+            "Safely deletes a specific or latest message inside a WhatsApp chat via Accessibility: long-presses ONLY the target message, taps Delete, and selects 'Delete for me' by default or 'Delete for everyone' ONLY if explicitly requested and available. Never uses ui_click blindly.",
+            *who,
+            Schema.string("message_text", "Optional exact text or snippet of the message to delete. Leave empty for the latest visible message."),
+            Schema.string("scope", "for_me (default) or for_everyone (only if explicitly asked by the user).", choices = listOf("for_me", "for_everyone")),
+            Schema.string("confirmed", "true ONLY if the user already explicitly confirmed deleting this specific message.", choices = listOf("false", "true")),
+        )
+
+        override suspend fun run(args: JSONObject, host: ToolHost): JSONObject {
+            val service = ControlService.instance?.takeIf { !it.overlay.stopped }
+                ?: return Results.failed("control_off", "Phone control is off. Turn on Accessibility control to delete a WhatsApp message.")
+            val waPkg = WhatsAppWorkflow.resolveInstalledPackage(host.context)
+                ?: return Results.failed("whatsapp_missing", "WhatsApp is not installed on this phone.")
+
+            val scopeArg = args.text("scope")
+            val scope = if (scopeArg.isNotEmpty()) {
+                WhatsAppDeleteMatcher.parseScope(scopeArg)
+            } else {
+                WhatsAppDeleteMatcher.parseScope(host.lastUserText)
+            }
+            val messageText = args.text("message_text")
+            val which = args.text("which").ifEmpty { "last" }
+            val confirmed = args.text("confirmed").equals("true", ignoreCase = true)
+
+            val explicitName = args.text("name")
+            val explicitNumber = args.text("number")
+            val currentSnap = service.snapshot()
+            val alreadyInWaChat = currentSnap != null &&
+                currentSnap.packageName in WHATSAPP &&
+                WhatsAppChatVerifier.isChatScreenOpen(currentSnap.elements, currentSnap.meta)
+
+            // If user is already inside the right WhatsApp chat, delete directly without reloading WhatsApp.
+            if (alreadyInWaChat && currentSnap != null) {
+                val targetName = explicitName.ifEmpty {
+                    ActiveTaskContext.snapshot().currentRecipient.takeIf {
+                        ActiveTaskContext.snapshot().isActive &&
+                            ActiveTaskContext.snapshot().currentApplication.equals("WhatsApp", ignoreCase = true)
+                    }.orEmpty()
+                }
+                if (targetName.isEmpty() && explicitNumber.isEmpty()) {
+                    val resultMsg = WhatsAppWorkflow.deleteMessage(
+                        service = service,
+                        recipient = "",
+                        which = which,
+                        messageText = messageText,
+                        scope = scope,
+                        alreadyConfirmed = confirmed,
+                    )
+                    return Results.done(resultMsg)
+                }
+                if (targetName.isNotEmpty() &&
+                    WhatsAppChatVerifier.matchesExpectedRecipient(currentSnap.elements, currentSnap.meta, targetName)
+                ) {
+                    val resultMsg = WhatsAppWorkflow.deleteMessage(
+                        service = service,
+                        recipient = targetName,
+                        which = which,
+                        messageText = messageText,
+                        scope = scope,
+                        alreadyConfirmed = confirmed,
+                    )
+                    return Results.done(resultMsg)
+                }
+            }
+
+            // Otherwise resolve contact, open that WhatsApp chat first, and then delete safely.
+            val effectiveArgs = injectRecipientFromContextIfMissing(args)
+            val to = when (val r = Recipients.resolve(effectiveArgs, host, "delete a message in")) {
+                is Recipients.Result.Found -> r
+                is Recipients.Result.Answer -> return r.json
+            }
+            val digits = internationalDigits(host.context, to.number)
+                ?: return Results.failed("bad_number", "That number doesn't look complete.")
+
+            ActiveTaskContext.beginTask(
+                task = "WhatsApp Delete Message",
+                application = "WhatsApp",
+                appPackage = waPkg,
+                recipient = to.name,
+                executionStep = "Open chat to delete message",
+            )
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://api.whatsapp.com/send?phone=$digits")).setPackage(waPkg)
+            return host.openApp(
+                intent,
+                "WhatsApp",
+                "Opening WhatsApp chat with ${to.name} to delete the message.",
+            ) {
+                WhatsAppWorkflow.deleteMessage(
+                    service = service,
+                    recipient = to.name,
+                    recipientPhoneDigits = digits,
+                    which = which,
+                    messageText = messageText,
+                    scope = scope,
+                    alreadyConfirmed = confirmed,
+                )
+            }
         }
     }
 
@@ -338,6 +469,8 @@ object CommsTools {
             if (!AppSettings(host.context).isAutomationEnabled(AutomationCategory.Calling)) {
                 return Results.failed("automation_disabled", "Calling automation is turned off in Settings → Permissions.")
             }
+            val waPkg = WhatsAppWorkflow.resolveInstalledPackage(host.context)
+                ?: return Results.failed("whatsapp_missing", "WhatsApp is not installed on this phone.")
             val effectiveArgs = injectRecipientFromContextIfMissing(args)
             val to = when (val r = Recipients.resolve(effectiveArgs, host, "call on WhatsApp")) {
                 is Recipients.Result.Found -> r
@@ -351,11 +484,11 @@ object CommsTools {
             ActiveTaskContext.beginTask(
                 task = kindText,
                 application = "WhatsApp",
-                appPackage = "com.whatsapp",
+                appPackage = waPkg,
                 recipient = to.name,
                 executionStep = "Open chat for $kindText",
             )
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://api.whatsapp.com/send?phone=$digits"))
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://api.whatsapp.com/send?phone=$digits")).setPackage(waPkg)
             val service = ControlService.instance?.takeIf { !it.overlay.stopped }
             if (service == null) {
                 return host.openApp(
@@ -373,6 +506,7 @@ object CommsTools {
                     service = service,
                     recipient = to.name,
                     kind = kind,
+                    recipientPhoneDigits = digits,
                     skipInternalConfirm = true,
                 )
             }
@@ -415,14 +549,21 @@ object CommsTools {
         return args
     }
 
-    /** E.164 digits without "+", using the SIM's country for local numbers. */
+    /** E.164 digits without "+", using the SIM/network country or Locale for local numbers. */
     private fun internationalDigits(context: Context, number: String): String? {
         val telephony = context.getSystemService(TelephonyManager::class.java)
-        val region = (telephony?.simCountryIso?.takeIf { it.isNotEmpty() } ?: Locale.getDefault().country)
-            .uppercase()
-        val e164 = PhoneNumberUtils.formatNumberToE164(number, region)
-            ?: number.takeIf { it.trim().startsWith("+") }
-        return e164?.filter(Char::isDigit)?.takeIf { it.length >= 8 }
+        val region = listOfNotNull(
+            telephony?.simCountryIso?.takeIf { it.isNotBlank() },
+            telephony?.networkCountryIso?.takeIf { it.isNotBlank() },
+            Locale.getDefault().country.takeIf { it.isNotBlank() },
+        ).firstOrNull()?.uppercase().orEmpty()
+        val e164 = if (region.isNotEmpty()) {
+            PhoneNumberUtils.formatNumberToE164(number, region)
+        } else {
+            null
+        } ?: number.takeIf { it.trim().startsWith("+") }
+        val digits = (e164 ?: number).filter(Char::isDigit)
+        return digits.takeIf { it.length >= 10 || (e164 != null && it.length >= 8) }
     }
 
     private const val CALL_VERIFY_WAIT_MS = 1_400L
@@ -458,6 +599,14 @@ object Recipients {
         val name = args.text("name")
         if (name.isEmpty()) return Result.Answer(Results.failed("no_recipient", "Ask who to $verb."))
         if (!host.hasPermission(ContactsReader.PERMISSION)) {
+            if (host.isPermissionDeniedInSession(ContactsReader.PERMISSION)) {
+                return Result.Answer(
+                    Results.failed(
+                        "permission_denied",
+                        "Contacts permission was denied. Ask the user to enable Contacts in Settings or say the phone number.",
+                    ),
+                )
+            }
             host.requestPermission(ContactsReader.PERMISSION)
             return Result.Answer(Results.needsPermission("Contacts"))
         }

@@ -44,6 +44,10 @@ class ControlRulesTest {
             "app.shilex.android",
             "com.android.settings",
             "com.android.vending",
+            "com.google.android.permissioncontroller",
+            "com.android.permissioncontroller",
+            "com.google.android.packageinstaller",
+            "com.android.packageinstaller",
         ).forEach {
             assertEquals(it, ControlRules.AppAccess.Blocked, ControlRules.appAccess(it))
             assertTrue(it, ControlRules.blocked(it))

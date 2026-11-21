@@ -41,6 +41,7 @@ class ControlService : AccessibilityService() {
         val isEditable: Boolean = false,
         val hint: String = "",
         val className: String = "",
+        val isLongClickable: Boolean = false,
     )
 
     sealed interface ScreenshotCapture {
@@ -196,7 +197,7 @@ class ControlService : AccessibilityService() {
                     bounds = "${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}",
                 )
             }
-            val tappable = node.isClickable || node.isEditable || node.isCheckable
+            val tappable = node.isClickable || node.isEditable || node.isCheckable || node.isLongClickable
             val include = when {
                 tappable -> true
                 own.isNotEmpty() && !insideTappable -> true
@@ -237,6 +238,7 @@ class ControlService : AccessibilityService() {
                         isEditable = node.isEditable,
                         hint = hint,
                         className = node.className?.toString().orEmpty(),
+                        isLongClickable = node.isLongClickable,
                     )
                 }
             }
@@ -345,15 +347,38 @@ class ControlService : AccessibilityService() {
     }
 
     fun click(node: AccessibilityNodeInfo): Boolean {
+        if (!node.isEnabled) return false
         var target: AccessibilityNodeInfo? = node
         while (target != null && !target.isClickable) target = target.parent
-        if (target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) return true
+        if (target?.isEnabled == true && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+        if (overlay.confirming) return false
         val bounds = Rect().also(node::getBoundsInScreen)
         if (bounds.isEmpty || bounds.width() <= 0 || bounds.height() <= 0) return false
         return tap(bounds.exactCenterX(), bounds.exactCenterY())
     }
 
+    fun longClick(node: AccessibilityNodeInfo): Boolean {
+        if (!node.isEnabled) return false
+        var target: AccessibilityNodeInfo? = node
+        while (target != null && !target.isLongClickable) target = target.parent
+        if (target?.isEnabled == true && target.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) return true
+        if (overlay.confirming) return false
+        val bounds = Rect().also(node::getBoundsInScreen)
+        if (bounds.isEmpty || bounds.width() <= 0 || bounds.height() <= 0) return false
+        return swipe(
+            bounds.exactCenterX(),
+            bounds.exactCenterY(),
+            bounds.exactCenterX(),
+            bounds.exactCenterY(),
+            durationMs = 700L,
+        )
+    }
+
     fun type(node: AccessibilityNodeInfo, text: String, submitIme: Boolean = false): Boolean {
+        if (!node.isEnabled) return false
+        if (!node.isFocused) {
+            node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        }
         node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
         val args = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
@@ -499,9 +524,9 @@ class ControlService : AccessibilityService() {
         .trim()
 
     private fun childText(node: AccessibilityNodeInfo): String {
-        val parts = mutableListOf<String>()
+        val parts = LinkedHashSet<String>()
         fun visit(n: AccessibilityNodeInfo) {
-            if (parts.size >= 3) return
+            if (parts.size >= 5) return
             ownLabel(n).takeIf { it.isNotEmpty() && n !== node }?.let { parts += it }
             for (i in 0 until n.childCount) n.getChild(i)?.let(::visit)
         }

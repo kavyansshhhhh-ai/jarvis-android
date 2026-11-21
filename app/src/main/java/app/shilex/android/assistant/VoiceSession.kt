@@ -201,7 +201,10 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
         Diag.i("session: start (headphones=${headphonesConnected(app)})")
         talkOver.reset(newConversation = true)
         VoiceService.start(app)
-        ControlService.instance?.overlay?.stopped = false
+        ControlService.instance?.overlay?.apply {
+            stopped = false
+            resetCooldown()
+        }
         lastActivity = SystemClock.elapsedRealtime()
         VoiceIndicator.onProcessing()
         connect()
@@ -367,6 +370,7 @@ class VoiceSession private constructor(private val app: Application) : LiveClien
     /** The user answered a tool's permission request; tell the model so it can carry on. */
     fun permissionAnswered(granted: Boolean) {
         val permission = _state.value.permissionNeeded ?: return
+        tools.onPermissionResult(permission, granted)
         _state.update { it.copy(permissionNeeded = null) }
         if (wanted) client.send(LiveProtocol.appNoteMessage(ToolRunner.permissionNote(permission, granted)))
     }

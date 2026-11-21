@@ -61,13 +61,30 @@ class ControlOverlay(private val service: AccessibilityService) {
 
     private val oneCard = Mutex()
     @Volatile private var pending: CompletableDeferred<Boolean>? = null
+    @Volatile private var lastCancelledWhat: String = ""
+    @Volatile private var lastCancelledAtMs: Long = 0L
+
+    /** Clears repeated-cancel cooldown when the user issues a fresh command or starts a new session. */
+    fun resetCooldown() {
+        lastCancelledWhat = ""
+        lastCancelledAtMs = 0L
+    }
 
     /**
      * Asks the user to Allow [what]; false on Cancel, after 30 s, when the session ends or
      * while the phone is locked (the card can't be tapped over the lock screen). One card at
-     * a time: a second risky tap waits for the first answer.
+     * a time: a second risky tap waits for the first answer. Refuses to re-pop an identical
+     * prompt immediately after the user cancelled it.
      */
     suspend fun confirm(what: String): Boolean = oneCard.withLock {
+        val now = System.currentTimeMillis()
+        if (lastCancelledWhat.isNotEmpty() &&
+            lastCancelledWhat.equals(what.trim(), ignoreCase = true) &&
+            now - lastCancelledAtMs < CANCEL_COOLDOWN_MS
+        ) {
+            Diag.i("control: suppressed repeated Allow popup for recently cancelled action")
+            return@withLock false
+        }
         if (service.getSystemService(KeyguardManager::class.java).isKeyguardLocked) {
             Diag.i("control: risky tap cancelled (phone locked)")
             return@withLock false
@@ -105,6 +122,13 @@ class ControlOverlay(private val service: AccessibilityService) {
                 confirming = false
             }
             pending = null
+        }
+        if (!allowed) {
+            lastCancelledWhat = what.trim()
+            lastCancelledAtMs = System.currentTimeMillis()
+        } else {
+            lastCancelledWhat = ""
+            lastCancelledAtMs = 0L
         }
         Diag.i("control: risky tap ${if (allowed) "allowed" else "cancelled"}")
         TaskTracker.confirmed(allowed)
@@ -210,6 +234,7 @@ class ControlOverlay(private val service: AccessibilityService) {
         const val PAD = 32
         const val STRIP_MS = 60_000L // the user may be answering a question mid-task
         const val CONFIRM_MS = 30_000L
+        const val CANCEL_COOLDOWN_MS = 12_000L
         const val HANDOVER_MS = 150_000L // under the session's 3-minute idle stop
     }
 }

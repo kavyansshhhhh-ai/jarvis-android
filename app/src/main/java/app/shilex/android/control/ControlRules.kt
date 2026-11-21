@@ -7,12 +7,16 @@ package app.shilex.android.control
 object ControlRules {
     enum class AppAccess { Allowed, LimitedFinance, Blocked }
 
-    /** Apps JARVIS never reads or touches: own screens, system settings, Play Store, NPCI PIN overlay, password vaults, authenticators. */
+    /** Apps JARVIS never reads or touches: own screens, system settings, permission dialogs, Play Store, NPCI PIN overlay, password vaults, authenticators. */
     private val HARD_BLOCKED_PACKAGES = setOf(
         "app.shilex.android",
         "com.android.settings", // phone settings get their own tools; keeps Accessibility off-limits
         "com.android.vending",
         "com.android.systemui",
+        "com.google.android.permissioncontroller",
+        "com.android.permissioncontroller",
+        "com.google.android.packageinstaller",
+        "com.android.packageinstaller",
         "org.npci.upi.security.pinactivitycomponent",
         "com.x8bit.bitwarden",
         "com.onepassword.android",

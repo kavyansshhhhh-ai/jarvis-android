@@ -28,11 +28,15 @@ interface ToolHost {
     val http: OkHttpClient
     val recoveryController: AgentRecoveryController
         get() = DefaultToolRecovery.controller
+    val lastUserText: String
+        get() = ""
 
     /** Ask the user for a runtime permission on screen. Returns at once. */
     fun requestPermission(permission: String)
 
     fun hasPermission(permission: String): Boolean
+
+    fun isPermissionDeniedInSession(permission: String): Boolean = false
 
     /**
      * Opens another app once the spoken reply has finished, one per turn, and returns the

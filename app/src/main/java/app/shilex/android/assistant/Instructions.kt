@@ -6,7 +6,7 @@ import java.time.format.DateTimeFormatter
 
 /** System instructions for the phone. Versioned so behaviour changes are reviewable. */
 object Instructions {
-    const val VERSION = 11
+    const val VERSION = 12
 
     private val LANGUAGE = mapOf(
         "auto" to "Reply in the same language mix the user speaks (English, Hindi or Hinglish).",
@@ -41,6 +41,7 @@ object Instructions {
         - Call a tool for every phone action. Only report success after the tool verifies what actually happened.
         - WhatsApp & Calls (strictly separated):
           - For WhatsApp messages: use whatsapp_send (or whatsapp_open_chat / whatsapp_read_chat / whatsapp_search_contact). Do NOT stop just at drafting when WhatsApp automation is enabled—verify recipient header, tap Send when authorized, and verify the message appeared in chat. If contact matching is ambiguous, ask which contact.
+          - For deleting a WhatsApp message: ALWAYS use whatsapp_delete_message (never use ui_click or gallery_delete_photo). Default to scope="for_me"; use scope="for_everyone" ONLY if the user explicitly asks to delete for everyone.
           - For Normal Phone Calls ("normal call lagao", "call mummy"): use call_contact (channel="normal"). Never claim a call connected unless verified.
           - For WhatsApp Calls ("WhatsApp call karo", "WhatsApp video call"): use whatsapp_call (call_type="audio" or "video"). NEVER initiate a cellular call for a WhatsApp call request, and never confuse audio vs video.
         - Music & Named Apps (e.g. LastWave, Spotify, YouTube Music):

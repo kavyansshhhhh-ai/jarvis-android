@@ -148,4 +148,61 @@ class PlayStoreMatcherTest {
             PlayStoreMatcher.resolveFlowState(blockedDecision, alreadyInstalled = true),
         )
     }
+
+    @Test
+    fun rejectsSponsoredAdsCloneGuidesAndWrongMultiTokenVariantsLikeFreeFireMaxForFreeFireIndia() {
+        val searchResults = listOf(
+            ScreenElement(1, "button", "Sponsored · Battlegrounds Mobile India", ""),
+            ScreenElement(2, "button", "Install", ""),
+            ScreenElement(3, "button", "Free Fire MAX · Garena International I", ""),
+            ScreenElement(4, "button", "Install", ""),
+            ScreenElement(5, "button", "Free Fire India Guide & Tips", ""),
+            ScreenElement(6, "button", "Free Fire India · Garena International I", ""),
+        )
+        val decision = PlayStoreMatcher.analyzeScreen("Free Fire India", searchResults)
+        // Multiple Install buttons on search list must NOT click an unrelated card's Install button;
+        // instead it should select the exact official Free Fire India card to open its listing page!
+        assertEquals(PlayStoreMatcher.ButtonState.None, decision.buttonState)
+        assertNotNull(decision.matchedListingElement)
+        assertEquals(6, decision.matchedListingElement?.number)
+        assertEquals("Free Fire India", decision.listingTitle)
+
+        // When only Free Fire MAX and Sponsored exist (no Free Fire India), must not mis-pick Free Fire MAX
+        val noIndiaMatch = listOf(
+            ScreenElement(1, "button", "Sponsored · Free Fire India", ""),
+            ScreenElement(2, "button", "Free Fire MAX", ""),
+            ScreenElement(3, "button", "Free Fire India Wallpaper", ""),
+        )
+        val miss = PlayStoreMatcher.analyzeScreen("Free Fire India", noIndiaMatch)
+        assertEquals(PlayStoreMatcher.ButtonState.None, miss.buttonState)
+        assertEquals(null, miss.matchedListingElement)
+    }
+
+    @Test
+    fun detectsPreRegisterNetworkErrorAndDoesNotFalseMatchCancelBodyText() {
+        val preReg = listOf(
+            ScreenElement(1, "text", "Free Fire India", ""),
+            ScreenElement(2, "button", "Pre-register", ""),
+        )
+        val preRegDecision = PlayStoreMatcher.analyzeScreen("Free Fire India", preReg)
+        assertEquals(PlayStoreMatcher.ButtonState.PreRegisterOrUnavailable, preRegDecision.buttonState)
+        assertEquals(StoreFlowState.FAILED, PlayStoreMatcher.resolveFlowState(preRegDecision))
+
+        val offline = listOf(
+            ScreenElement(1, "text", "You're offline. Check your connection.", ""),
+            ScreenElement(2, "button", "Try again", ""),
+        )
+        val offlineDecision = PlayStoreMatcher.analyzeScreen("WhatsApp", offline)
+        assertEquals(PlayStoreMatcher.ButtonState.NetworkError, offlineDecision.buttonState)
+        assertEquals(2, offlineDecision.actionElement?.number)
+
+        val descriptionWithCancel = listOf(
+            ScreenElement(1, "text", "Spotify", ""),
+            ScreenElement(2, "text", "Cancel anytime in settings.", ""),
+            ScreenElement(3, "button", "Install", ""),
+        )
+        val d = PlayStoreMatcher.analyzeScreen("Spotify", descriptionWithCancel)
+        assertEquals(PlayStoreMatcher.ButtonState.Install, d.buttonState)
+        assertEquals(3, d.actionElement?.number)
+    }
 }

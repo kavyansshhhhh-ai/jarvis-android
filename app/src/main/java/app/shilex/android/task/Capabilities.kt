@@ -62,6 +62,7 @@ object Capabilities {
         Capability("whatsapp_open_chat", "Open WhatsApp chat", Risk.Low),
         Capability("whatsapp_read_chat", "Read WhatsApp chat", Risk.Medium),
         Capability("whatsapp_search_contact", "Search WhatsApp contact", Risk.Low),
+        Capability("whatsapp_delete_message", "Delete WhatsApp message", Risk.High),
         Capability("whatsapp_call", "WhatsApp call", Risk.High, Finish.User, "WhatsApp call screen opening."),
         Capability("playstore_search_install", "Play Store lookup/install", Risk.Medium),
         Capability("gallery_delete_photo", "Delete photo (confirmed)", Risk.High),

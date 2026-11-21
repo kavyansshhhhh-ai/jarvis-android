@@ -333,6 +333,9 @@ object ScreenTools {
             val expectedDestKey = igExpectedIntent?.name ?: label
             val currentScreenKey = "${pkg}:${preSnap?.signature?.take(24).orEmpty()}"
             val actionId = if (explicitNumber > 0) "click:#$explicitNumber" else "click:${requestedLabel.lowercase()}"
+            if (host.recoveryController.isCancelledOnScreen(actionId, currentScreenKey)) {
+                return Results.failed("cancelled", "The user already cancelled this action on the current screen. Don't prompt again unless they ask.")
+            }
             if (host.recoveryController.shouldSkipDuplicate(actionId, currentScreenKey, expectedDestKey)) {
                 return Results.done("Skipped duplicate action on \"${ScreenText.shorten(label.ifEmpty { requestedLabel })}\" on the unchanged screen.")
             }
@@ -350,6 +353,7 @@ object ScreenTools {
                 val shortLabel = ScreenText.shorten(label.ifEmpty { "this button" })
                 val what = if (summary.isNotEmpty()) "Tap \"$shortLabel\" ($summary)" else "Tap \"$shortLabel\""
                 if (!service.overlay.confirm(what)) {
+                    host.recoveryController.markCancelled(actionId, currentScreenKey)
                     return Results.failed("cancelled", "The user didn't allow it. Don't try again unless they ask.")
                 }
             }
@@ -652,8 +656,14 @@ object ScreenTools {
                 ControlRules.clickRisk(label, nodeId, effectivePkg),
             ).maxBy { it.ordinal }
             val name = ScreenText.shorten(label.ifEmpty { seen.sees }.ifEmpty { target })
+            val sightActionId = "sight:${target.lowercase()}"
+            val sightScreenKey = effectivePkg
+            if (host.recoveryController.isCancelledOnScreen(sightActionId, sightScreenKey)) {
+                return Results.failed("cancelled", "The user already cancelled this action. Don't retry unless they ask.")
+            }
             if (risk == ControlRules.Risk.Money) return payment(name)
             if (risk != ControlRules.Risk.Safe && !service.overlay.confirm("Tap \"$name\"")) {
+                host.recoveryController.markCancelled(sightActionId, sightScreenKey)
                 return Results.failed("cancelled", "The user didn't allow it. Don't try again unless they ask.")
             }
             if (!service.tapAt(seen.x, seen.y)) return Results.failed("tap_failed", "The tap didn't go through.")

@@ -84,6 +84,17 @@ class AssistantAgentTest {
         controller.reset()
         assertEquals(0, controller.currentRetryCount())
         assertFalse(controller.shouldSkipDuplicate(actionId, "home_screen", "app_page"))
+
+        // Staying in the same foreground package must NOT wipe attempted/cancelled actions
+        assertFalse(controller.shouldSkipDuplicate("click:delete", "com.whatsapp:abc", "delete"))
+        controller.markCancelled("click:delete", "com.whatsapp:abc")
+        controller.onForegroundPackageChanged("com.whatsapp")
+        assertTrue(controller.shouldSkipDuplicate("click:delete", "com.whatsapp:abc", "delete"))
+        assertTrue(controller.isCancelledOnScreen("click:delete", "com.whatsapp:abc"))
+
+        // Switching to a different foreground package resets screen-level action memory
+        controller.onForegroundPackageChanged("com.android.vending")
+        assertFalse(controller.isCancelledOnScreen("click:delete", "com.whatsapp:abc"))
     }
 
     @Test

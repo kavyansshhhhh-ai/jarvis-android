@@ -141,8 +141,16 @@ fun HomeScreen(
     val askForTool = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission(), onPermissionAnswered)
     LaunchedEffect(state.permissionNeeded) {
         state.permissionNeeded?.let { permission ->
-            PermissionRegistry.markRequested(context, permission)
-            askForTool.launch(permission)
+            val alreadyGranted = ContextCompat.checkSelfPermission(
+                context,
+                permission,
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (alreadyGranted) {
+                onPermissionAnswered(true)
+            } else {
+                PermissionRegistry.markRequested(context, permission)
+                askForTool.launch(permission)
+            }
         }
     }
     val startListening = {
@@ -155,46 +163,56 @@ fun HomeScreen(
         }
     }
 
+    val startRecognitionIntent = {
+        runCatching {
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            }
+            speechRecognizer?.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) { isListeningSpeech = true }
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onBufferReceived(buffer: ByteArray?) {}
+                override fun onEndOfSpeech() { isListeningSpeech = false }
+                override fun onError(error: Int) { isListeningSpeech = false }
+                override fun onResults(results: Bundle?) {
+                    isListeningSpeech = false
+                    val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    if (!matches.isNullOrEmpty()) {
+                        inputText = matches[0]
+                    }
+                }
+                override fun onPartialResults(partialResults: Bundle?) {
+                    val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    if (!matches.isNullOrEmpty()) {
+                        inputText = matches[0]
+                    }
+                }
+                override fun onEvent(eventType: Int, params: Bundle?) {}
+            })
+            speechRecognizer?.startListening(intent)
+            isListeningSpeech = true
+        }
+    }
+
+    val askSpeechMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startRecognitionIntent() else onMicDenied()
+    }
+
     val startSpeechRecognition = {
         val granted = PermissionRegistry.isGrantedNow(context, PermissionId.Microphone)
         if (!granted) {
             PermissionRegistry.markRequested(context, Manifest.permission.RECORD_AUDIO)
-            askMic.launch(Manifest.permission.RECORD_AUDIO)
+            askSpeechMic.launch(Manifest.permission.RECORD_AUDIO)
         } else {
             runCatching {
                 if (isListeningSpeech) {
                     speechRecognizer?.stopListening()
                     isListeningSpeech = false
                 } else {
-                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
-                        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                    }
-                    speechRecognizer?.setRecognitionListener(object : RecognitionListener {
-                        override fun onReadyForSpeech(params: Bundle?) { isListeningSpeech = true }
-                        override fun onBeginningOfSpeech() {}
-                        override fun onRmsChanged(rmsdB: Float) {}
-                        override fun onBufferReceived(buffer: ByteArray?) {}
-                        override fun onEndOfSpeech() { isListeningSpeech = false }
-                        override fun onError(error: Int) { isListeningSpeech = false }
-                        override fun onResults(results: Bundle?) {
-                            isListeningSpeech = false
-                            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            if (!matches.isNullOrEmpty()) {
-                                inputText = matches[0]
-                            }
-                        }
-                        override fun onPartialResults(partialResults: Bundle?) {
-                            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            if (!matches.isNullOrEmpty()) {
-                                inputText = matches[0]
-                            }
-                        }
-                        override fun onEvent(eventType: Int, params: Bundle?) {}
-                    })
-                    speechRecognizer?.startListening(intent)
-                    isListeningSpeech = true
+                    startRecognitionIntent()
                 }
             }
         }
