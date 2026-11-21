@@ -2,6 +2,7 @@ package app.shilex.android.control
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import app.shilex.android.Diag
 import app.shilex.android.task.ActiveTaskContext
 import app.shilex.android.task.TaskTracker
@@ -125,6 +126,7 @@ object WhatsAppChatVerifier {
         expectedRecipient: String,
         expectedPhoneDigits: String = "",
     ): Boolean {
+        if (!isChatScreenOpen(elements, meta)) return false
         val wantedTokens = normalizeTokens(expectedRecipient)
         val cleanPhoneTail = expectedPhoneDigits.filter(Char::isDigit).takeLast(10)
         if (wantedTokens.isEmpty() && cleanPhoneTail.isEmpty()) return true
@@ -391,7 +393,12 @@ object WhatsAppWorkflow {
         val pm = context.packageManager
         return WHATSAPP_PACKAGES.firstOrNull { pkg ->
             runCatching {
-                pm.getPackageInfo(pkg, PackageManager.PackageInfoFlags.of(0))
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    pm.getPackageInfo(pkg, PackageManager.PackageInfoFlags.of(0))
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.getPackageInfo(pkg, 0)
+                }
                 true
             }.getOrDefault(false)
         }
@@ -647,7 +654,7 @@ object WhatsAppWorkflow {
         val target = when (val res = WhatsAppDeleteMatcher.findTargetMessage(snap.elements, snap.meta, which, messageText)) {
             is WhatsAppDeleteMatcher.TargetResolution.Found -> res.element
             is WhatsAppDeleteMatcher.TargetResolution.Ambiguous -> {
-                val opts = res.candidates.joinToString("; ") { "\"${ScreenText.shorten(it.label, 36)}\"" }
+                val opts = res.candidates.joinToString("; ") { "\"${ScreenText.shorten(it.label)}\"" }
                 return "Multiple messages match ($opts). Ask the user which exact message to delete."
             }
             WhatsAppDeleteMatcher.TargetResolution.NotFound -> {
@@ -665,7 +672,7 @@ object WhatsAppWorkflow {
             "Delete for me"
         }
         if (!alreadyConfirmed) {
-            val snippet = ScreenText.shorten(target.label, 42)
+            val snippet = ScreenText.shorten(target.label)
             if (!service.overlay.confirm("$scopeLabel: \"$snippet\"?")) {
                 TaskTracker.verified(false, "Message deletion cancelled.")
                 return "Message deletion was cancelled; nothing was deleted."
